@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.0
+
+- Interface regroupée dans un bloc unique en bas à droite, de haut en bas : panneau ⚙️ (s'ouvre vers le haut), barre de boutons (🚨 PANIC · ⚙️ OgOwnax · interrupteur Activé avec voyant), files de construction, carte « ⏱️ Prochain clic ».
+- Style unifié (cartes aux mêmes couleurs, bordures et ombres ; boutons de même hauteur) ; le bouton ⚙️ reste en surbrillance tant que le panneau est ouvert.
+
 ## 1.12.1
 
 - Correction : quand les ressources qui manquaient arrivent d'un coup (récompense, flotte), la vérification est faite **tout de suite** au lieu de rester à l'échéance prévue (le panneau affichait « ⏳ Ressources presque disponibles » sans rien lancer). Une seule fois par vérification, pour ne pas boucler quand OGame bloque pour une autre raison.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.12.1
+// @version      1.13.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -200,42 +200,155 @@
         window.location.reload();
     }
 
-    function createToggleButton() {
+    // Bloc unique en bas à droite : [panneau ⚙️ (s'ouvre vers le haut)] / [barre de boutons] / [files de construction]
+    function getDock() {
+        let dock = document.getElementById('ogame-plugin-dock');
+        if (dock) return dock;
+
         const style = document.createElement('style');
         style.textContent = `
-            #ogame-plugin-buttons {
+            #ogame-plugin-dock {
                 position: fixed;
-                top: 50px;
                 right: 10px;
+                bottom: 45px;
                 z-index: 10000;
+                display: flex;
+                flex-direction: column;
+                align-items: flex-end;
+                gap: 6px;
+                max-height: calc(100vh - 60px);
+                font-family: Verdana, Arial, sans-serif;
+            }
+            #ogame-plugin-dock .ogp-card {
+                box-sizing: border-box;
+                width: 300px;
+                background: linear-gradient(180deg, rgba(16, 36, 48, 0.97) 0%, rgba(6, 16, 21, 0.97) 100%);
+                border: 1px solid #3c5a6a;
+                border-radius: 8px;
+                box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
+                color: #9fc3d6;
+                font-size: 11px;
+            }
+            #ogame-plugin-toolbar {
+                flex-shrink: 0;
+                padding: 6px;
+            }
+            #ogame-plugin-toolbar .ogp-buttons {
                 display: flex;
                 gap: 5px;
             }
-            #ogame-plugin-toggle {
-                padding: 8px 12px;
+            #ogame-plugin-toolbar button {
+                height: 28px;
+                padding: 0 9px;
+                border: 1px solid;
+                border-radius: 5px;
                 cursor: pointer;
-                font-size: 12px;
-                border-radius: 4px;
+                font-family: inherit;
+                font-size: 11px;
                 font-weight: bold;
+                white-space: nowrap;
+                transition: filter 0.15s, box-shadow 0.15s;
+            }
+            #ogame-plugin-toolbar button:hover {
+                filter: brightness(1.3);
+            }
+            #ogame-plugin-panic-btn {
+                background: linear-gradient(180deg, #5a1d1d 0%, #2e0d0d 100%);
+                border-color: #8a3c3c !important;
+                color: #ffb0b0;
+            }
+            #ogame-plugin-btn {
+                flex: 1;
+                background: linear-gradient(180deg, #1f4253 0%, #0d2230 100%);
+                border-color: #3c6a7f !important;
+                color: #bfe3f5;
+            }
+            #ogame-plugin-btn.open {
+                box-shadow: inset 0 0 0 1px #6fcfff;
+            }
+            #ogame-plugin-btn.no-webhook {
+                border-color: #cfaf6f !important;
+            }
+            #ogame-plugin-btn.launching {
+                background: linear-gradient(180deg, #3a4a1a 0%, #1f290d 100%);
+                border-color: #5a6a3c !important;
+            }
+            #ogame-plugin-toggle {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            #ogame-plugin-toggle .ogp-dot {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: currentColor;
+                box-shadow: 0 0 6px currentColor;
             }
             #ogame-plugin-toggle.enabled {
-                background: linear-gradient(180deg, #1a4a2a 0%, #0d2915 100%);
-                border: 1px solid #3c6a4a;
-                color: #9fffaf;
+                background: linear-gradient(180deg, #1d4a2a 0%, #0d2915 100%);
+                border-color: #3c7a4a;
+                color: #8fff9f;
             }
             #ogame-plugin-toggle.disabled {
                 background: linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 100%);
-                border: 1px solid #6a3c3c;
+                border-color: #7a3c3c;
                 color: #ff9f9f;
+            }
+            #ogame-plugin-timer {
+                flex-shrink: 0;
+                display: none;
+                justify-content: space-between;
+                align-items: center;
+                padding: 7px 10px;
+            }
+            #ogame-plugin-timer.active {
+                display: flex;
+            }
+            #ogame-plugin-timer .timer-label {
+                color: #9fc3d6;
+                font-weight: bold;
+            }
+            #ogame-plugin-timer .timer-value {
+                color: #6fcfff;
+                font-weight: bold;
+            }
+            #ogame-plugin-timer.warning .timer-value {
+                color: #cfaf6f;
+            }
+            #ogame-plugin-timer.imminent .timer-value {
+                color: #cf6f6f;
             }
         `;
         document.head.appendChild(style);
 
+        dock = document.createElement('div');
+        dock.id = 'ogame-plugin-dock';
+        document.body.appendChild(dock);
+        return dock;
+    }
+
+    function closeConfigPanel() {
+        const panel = document.getElementById('ogame-plugin-panel');
+        if (panel) panel.style.display = 'none';
+        document.getElementById('ogame-plugin-btn')?.classList.remove('open');
+    }
+
+    function createToolbar() {
+        const toolbar = document.createElement('div');
+        toolbar.id = 'ogame-plugin-toolbar';
+        toolbar.className = 'ogp-card';
+        toolbar.innerHTML = '<div class="ogp-buttons"></div>';
+        getDock().appendChild(toolbar);
+        return toolbar;
+    }
+
+    function createToggleButton() {
         const enabled = isPluginEnabled();
         const btn = document.createElement('button');
         btn.id = 'ogame-plugin-toggle';
         btn.className = enabled ? 'enabled' : 'disabled';
-        btn.textContent = enabled ? '✅ Activé' : '⛔ Désactivé';
+        btn.innerHTML = `<span class="ogp-dot"></span>${enabled ? 'Activé' : 'Désactivé'}`;
         btn.title = enabled ? 'Cliquer pour désactiver complètement le plugin' : 'Cliquer pour réactiver le plugin';
         btn.addEventListener('click', () => setPluginEnabled(!enabled));
         return btn;
@@ -2034,7 +2147,7 @@
         saveLaunchState(state);
         console.log('[Monitor] Démarrage du lancement:', state);
 
-        document.getElementById('ogame-plugin-panel').style.display = 'none';
+        closeConfigPanel();
 
         goToCelestialBody(firstBody.id, firstBody.type);
     }
@@ -2269,76 +2382,18 @@
     function createConfigPanel() {
         const style = document.createElement('style');
         style.textContent = `
-            #ogame-plugin-timer {
-                position: fixed;
-                top: 10px;
-                right: 10px;
-                z-index: 10000;
-                background: linear-gradient(180deg, #1a3a4a 0%, #0d1f29 100%);
-                border: 1px solid #3c5a6a;
-                color: #9fc3d6;
-                padding: 6px 12px;
-                font-size: 11px;
-                border-radius: 4px;
-                font-family: Verdana, Arial, sans-serif;
-                display: none;
-            }
-            #ogame-plugin-timer.active {
-                display: block;
-            }
-            #ogame-plugin-timer .timer-label {
-                color: #6a9aaa;
-                margin-right: 5px;
-            }
-            #ogame-plugin-timer .timer-value {
-                color: #6fcfff;
-                font-weight: bold;
-            }
-            #ogame-plugin-timer.warning .timer-value {
-                color: #cfaf6f;
-            }
-            #ogame-plugin-timer.imminent .timer-value {
-                color: #cf6f6f;
-            }
-            #ogame-plugin-btn, #ogame-plugin-panic-btn {
-                background: linear-gradient(180deg, #1a3a4a 0%, #0d1f29 100%);
-                border: 1px solid #3c5a6a;
-                color: #9fc3d6;
-                padding: 8px 12px;
-                cursor: pointer;
-                font-size: 12px;
-                border-radius: 4px;
-            }
-            #ogame-plugin-btn:hover {
-                background: linear-gradient(180deg, #2a4a5a 0%, #1d2f39 100%);
-            }
-            #ogame-plugin-btn.launching {
-                background: linear-gradient(180deg, #3a4a1a 0%, #1f290d 100%);
-                border-color: #5a6a3c;
-            }
-            #ogame-plugin-btn.no-webhook {
-                border-color: #cfaf6f;
-            }
-            #ogame-plugin-panic-btn {
-                background: linear-gradient(180deg, #4a1a1a 0%, #290d0d 100%);
-                border-color: #6a3c3c;
-                color: #ff9f9f;
-            }
-            #ogame-plugin-panic-btn:hover {
-                background: linear-gradient(180deg, #5a2a2a 0%, #391d1d 100%);
-            }
+            /* Dans le bloc du bas : s'ouvre au-dessus de la barre de boutons */
             #ogame-plugin-panel {
                 display: none;
-                position: fixed;
-                top: 90px;
-                right: 10px;
-                z-index: 10001;
-                background: linear-gradient(180deg, #0d1f29 0%, #061015 100%);
-                border: 2px solid #3c5a6a;
+                flex: 0 1 auto;
+                min-height: 150px;
+                box-sizing: border-box;
+                background: linear-gradient(180deg, rgba(16, 36, 48, 0.98) 0%, rgba(6, 16, 21, 0.98) 100%);
+                border: 1px solid #3c5a6a;
                 border-radius: 8px;
+                box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
                 padding: 15px;
                 width: 470px;
-                max-height: 80vh;
                 overflow-y: auto;
                 color: #9fc3d6;
                 font-family: Verdana, Arial, sans-serif;
@@ -2651,22 +2706,23 @@
         `;
         document.head.appendChild(style);
 
+        const dock = getDock();
+        const toolbar = createToolbar();
+        toolbar.querySelector('.ogp-buttons').innerHTML = `
+            <button id="ogame-plugin-panic-btn" title="Envoyer immédiatement la flotte (configuration dans ⚙️ → Défense)">🚨 PANIC</button>
+            <button id="ogame-plugin-btn" title="OgOwnax Plugin v${GM_info.script.version}">⚙️ OgOwnax</button>
+        `;
+        toolbar.querySelector('.ogp-buttons').appendChild(createToggleButton());
+
+        // Carte « Prochain clic », toujours en bas du bloc (les files de construction s'insèrent au-dessus)
         const timer = document.createElement('div');
         timer.id = 'ogame-plugin-timer';
+        timer.className = 'ogp-card';
         timer.innerHTML = `
-            <span class="timer-label">⏱️ Prochain clic:</span>
+            <span class="timer-label">⏱️ Prochain clic</span>
             <span class="timer-value" id="timer-countdown">--:--</span>
         `;
-        document.body.appendChild(timer);
-
-        const buttonsContainer = document.createElement('div');
-        buttonsContainer.id = 'ogame-plugin-buttons';
-        buttonsContainer.innerHTML = `
-            <button id="ogame-plugin-panic-btn">🚨 PANIC</button>
-            <button id="ogame-plugin-btn">⚙️ OgOwnax Plugin</button>
-        `;
-        buttonsContainer.appendChild(createToggleButton());
-        document.body.appendChild(buttonsContainer);
+        dock.appendChild(timer);
 
         const panel = document.createElement('div');
         panel.id = 'ogame-plugin-panel';
@@ -2904,7 +2960,7 @@
                 <button class="btn-cancel" id="cfg-cancel">❌ Fermer</button>
             </div>
         `;
-        document.body.appendChild(panel);
+        dock.insertBefore(panel, toolbar);
 
         const showConfigTab = (name) => {
             panel.querySelectorAll('[data-tab]').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
@@ -2921,6 +2977,7 @@
 
         document.getElementById('ogame-plugin-btn').addEventListener('click', () => {
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+            document.getElementById('ogame-plugin-btn').classList.toggle('open', panel.style.display === 'block');
             if (panel.style.display === 'block') {
                 loadFormValues();
             }
@@ -2930,7 +2987,7 @@
 
         document.getElementById('cfg-save').addEventListener('click', saveFormValues);
         document.getElementById('cfg-cancel').addEventListener('click', () => {
-            panel.style.display = 'none';
+            closeConfigPanel();
         });
         document.getElementById('cfg-reset').addEventListener('click', () => {
             if (confirm('Réinitialiser la configuration par défaut ? (le webhook Discord est conservé)')) {
@@ -3395,7 +3452,7 @@
         renderBuildQueuePanel();
         updateWebhookIndicator();
         alert('Configuration sauvegardée !');
-        document.getElementById('ogame-plugin-panel').style.display = 'none';
+        closeConfigPanel();
         const { discordWebhook, ...loggable } = CONFIG;
         console.log('[Monitor] Configuration mise à jour:', loggable);
     }
@@ -4293,21 +4350,13 @@
                 border-radius: 3px;
                 pointer-events: none;
             }
+            /* Carte du bloc du bas (style commun .ogp-card) */
             #ogame-plugin-buildqueue {
-                position: fixed;
-                bottom: 45px;
-                right: 10px;
-                z-index: 10000;
-                width: 280px;
-                max-height: 50vh;
+                flex: 0 1 auto;
+                min-height: 0;
+                max-height: 40vh;
                 overflow-y: auto;
-                background: linear-gradient(180deg, #0d1f29 0%, #061015 100%);
-                border: 2px solid #3c5a6a;
-                border-radius: 8px;
                 padding: 8px 10px;
-                color: #9fc3d6;
-                font-family: Verdana, Arial, sans-serif;
-                font-size: 11px;
             }
             #ogame-plugin-buildqueue .bq-title {
                 color: #6fcfff;
@@ -4442,6 +4491,7 @@
         if (!panel) {
             panel = document.createElement('div');
             panel.id = 'ogame-plugin-buildqueue';
+            panel.className = 'ogp-card';
             panel.addEventListener('click', (e) => {
                 const btn = e.target.closest('button[data-action]');
                 if (!btn) return;
@@ -4449,7 +4499,8 @@
                 if (btn.dataset.action === 'remove') removeFromBuildQueue(btn.dataset.key, index);
                 if (btn.dataset.action === 'up') moveUpInBuildQueue(btn.dataset.key, index);
             });
-            document.body.appendChild(panel);
+            // Sous la barre de boutons, au-dessus de la carte « Prochain clic »
+            getDock().insertBefore(panel, document.getElementById('ogame-plugin-timer'));
         }
 
         // Partie statique (reconstruite seulement si elle change) ; les textes qui bougent
@@ -4734,10 +4785,9 @@
 
         if (!isPluginEnabled()) {
             console.log('[Monitor] ⛔ Plugin désactivé : aucune surveillance ni action automatique');
-            const buttonsContainer = document.createElement('div');
-            buttonsContainer.id = 'ogame-plugin-buttons';
-            buttonsContainer.appendChild(createToggleButton());
-            document.body.appendChild(buttonsContainer);
+            const toolbar = createToolbar();
+            toolbar.style.width = 'auto';
+            toolbar.querySelector('.ogp-buttons').appendChild(createToggleButton());
             return;
         }
 
