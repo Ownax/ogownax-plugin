@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.9.1
+// @version      1.9.2
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3438,7 +3438,8 @@
     }
 
     function getTileReason(tile) {
-        const title = tile.getAttribute('title') || tile.dataset.title || '';
+        // OGame déplace le title vers data-tooltip-title une fois l'infobulle initialisée
+        const title = tile.getAttribute('title') || tile.dataset.tooltipTitle || tile.dataset.title || '';
         const parts = title.split(/<br\s*\/?>/i);
         return parts.length > 1 ? parts.slice(1).join(' ').replace(/<[^>]+>/g, '').trim() : '';
     }
@@ -3545,11 +3546,13 @@
     }
 
     async function upgradeBuilding(tile, technologyId) {
-        tile.click();
-        const upgradeBtn = await waitForElement(
-            `#technologydetails button.upgrade[data-technology="${technologyId}"], #technologydetails button.upgrade, #technologydetails_content button.upgrade`,
-            8000
-        );
+        // OGame ouvre le détail au clic sur l'icône (délégué sur `.technology.hasDetails:not(.showsDetails) .icon`)
+        const selector = `#technologydetails button.upgrade[data-technology="${technologyId}"]`;
+        if (!document.querySelector(selector)) {
+            (tile.querySelector('.icon') || tile).click();
+        }
+        // Uniquement le bouton du bon bâtiment : le détail d'un autre peut être déjà ouvert
+        const upgradeBtn = await waitForElement(selector, 8000);
         if (upgradeBtn.disabled) {
             throw new Error('Bouton Améliorer désactivé');
         }

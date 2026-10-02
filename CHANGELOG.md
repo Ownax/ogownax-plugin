@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.9.2
+
+- Correction du lancement de construction (vérifié en jeu) : le détail du bâtiment s'ouvre en cliquant sur l'icône de la tuile, et seul le bouton « Développer » du bon bâtiment est utilisé.
+- Le statut de la file affiche la raison donnée par OGame (lue dans `data-tooltip-title`).
+
 ## 1.9.1
 
 - Correction file de construction : à la fin du compte à rebours, la page est rechargée (ou la bonne planète/page ouverte) au lieu de relire une page figée qui affichait encore « Construction en cours » indéfiniment.
