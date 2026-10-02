@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.10.0
+// @version      1.10.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3821,6 +3821,21 @@
         const queues = loadBuildQueues();
         const now = Date.now();
         const currentId = getCurrentPlanetId();
+
+        // Planète/lune abandonnée ou détruite : sa file ne peut plus être traitée
+        const bodyIds = new Set(getAllCelestialBodies().map(b => b.id));
+        if (bodyIds.size > 0) {
+            const orphans = Object.keys(queues).filter(id => !bodyIds.has(id));
+            if (orphans.length > 0) {
+                orphans.forEach(id => {
+                    console.log(`[Build] ${queues[id].coords} n'existe plus, file supprimée`);
+                    notifyDiscord(`⚠️ **File de construction supprimée** : ${formatBodyLabel(queues[id])} n'existe plus`);
+                    delete queues[id];
+                });
+                saveBuildQueues(queues);
+            }
+        }
+
         const due = Object.keys(queues).filter(id => queues[id].items.length > 0 && (queues[id].nextCheckAt || 0) <= now);
         if (due.length === 0) return;
 

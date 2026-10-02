@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.1
+
+- File de construction multi-planètes : la file d'une planète/lune qui n'existe plus (abandonnée, détruite) est supprimée avec une notification, au lieu de tenter d'y naviguer indéfiniment.
+
 ## 1.10.0
 
 - File de construction : affichage des **ressources manquantes** et de l'**heure estimée** pour le prochain bâtiment (« Manque : 708 métal · prêt vers 16h38 (dans 6:34) »), mis à jour chaque seconde.
