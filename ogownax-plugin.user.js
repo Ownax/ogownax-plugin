@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.10.2
+// @version      1.11.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -73,7 +73,26 @@
     const PROCESSED_ATTACKS_KEY = 'ogame_plugin_processed_attacks';
     const BUILD_QUEUE_KEY = 'ogame_plugin_build_queue';
     const BUILD_STATE_KEY = 'ogame_plugin_build_state';
-    const BUILDING_PAGES = ['supplies', 'facilities'];
+    const BUILD_INFO_KEY = 'ogame_plugin_construction_info';
+    // Deux emplacements de construction indépendants par planète/lune
+    const BUILD_LANES = {
+        building: {
+            pages: ['supplies', 'facilities'],
+            box: '#productionboxbuildingcomponent',
+            title: '🏗️ File de construction',
+            // Les satellites solaires (212) et foreuses (217) sont des unités, pas des bâtiments
+            isTechnology: id => id < 200,
+        },
+        lifeform: {
+            pages: ['lfbuildings'],
+            box: '#productionboxlfbuildingcomponent',
+            title: '🧬 File formes de vie',
+            isTechnology: id => id > 10000,
+        },
+    };
+    const BUILDING_PAGES = Object.values(BUILD_LANES).flatMap(lane => lane.pages);
+    // Pendant l'amélioration de ces usines, OGame bloque les bâtiments de formes de vie (et inversement)
+    const LIFEFORM_BLOCKING_BUILDINGS = { 14: 'Usine de robots', 15: 'Usine de nanites' };
 
     let scheduledPanicTimeout = null;
     let scheduledPanicTargetTime = null;
@@ -3417,10 +3436,87 @@
         };
     }
 
+    function getLaneOfComponent(component) {
+        return Object.keys(BUILD_LANES).find(lane => BUILD_LANES[lane].pages.includes(component)) || null;
+    }
+
+    // Clé de stockage d'une file : l'id de la planète pour les bâtiments (compatible avec les files existantes),
+    // « id|lf » pour les formes de vie
+    function getQueueKey(planetId, lane) {
+        return lane === 'lifeform' ? `${planetId}|lf` : String(planetId);
+    }
+
+    function getQueuePlanetId(key) {
+        return String(key).split('|')[0];
+    }
+
+    function getQueueLane(key) {
+        return String(key).endsWith('|lf') ? 'lifeform' : 'building';
+    }
+
     function getBuildingTiles() {
-        // Les satellites solaires (212) et foreuses (217) sont des unités, pas des bâtiments
+        const lane = getLaneOfComponent(getCurrentPage());
+        if (!lane) return [];
         return [...document.querySelectorAll('#technologies li.technology[data-technology]')]
-            .filter(tile => parseInt(tile.dataset.technology) < 200);
+            .filter(tile => BUILD_LANES[lane].isTechnology(parseInt(tile.dataset.technology)));
+    }
+
+    // Constructions en cours vues sur chaque planète : { planetId: { building: {technologyId, end}, lifeform: {...} } }
+    // Nécessaire car la page Formes de vie n'affiche pas le cadre « Bâtiment » (et inversement)
+    function loadConstructionInfo() {
+        try {
+            return JSON.parse(localStorage.getItem(BUILD_INFO_KEY)) || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function recordConstructionInfoHere() {
+        const planetId = getCurrentPlanetId();
+        if (!planetId) return;
+        const info = loadConstructionInfo();
+        const planetInfo = info[planetId] || {};
+        let changed = false;
+        Object.keys(BUILD_LANES).forEach(lane => {
+            const box = document.querySelector(BUILD_LANES[lane].box);
+            if (!box) return;
+            const countdown = box.querySelector('[data-end]');
+            let technologyId = null;
+            if (countdown) {
+                // ex. onclick="cancelbuilding(14, 12095, ...)" ; repli sur la tuile en construction si elle est affichée
+                const cancel = [...box.querySelectorAll('[onclick]')].map(e => e.getAttribute('onclick')).find(s => /cancel\w*\(\s*\d+/.test(s));
+                const match = cancel && cancel.match(/cancel\w*\(\s*(\d+)/);
+                const activeTile = document.querySelector('#technologies li.technology[data-status="active"]');
+                technologyId = match ? parseInt(match[1]) : (activeTile && getLaneOfComponent(getCurrentPage()) === lane ? parseInt(activeTile.dataset.technology) : null);
+            }
+            planetInfo[lane] = {
+                technologyId,
+                end: countdown ? serverSecondsToLocalMs(parseInt(countdown.dataset.end)) : 0,
+                seenAt: Date.now(),
+            };
+            changed = true;
+        });
+        if (changed) {
+            info[planetId] = planetInfo;
+            localStorage.setItem(BUILD_INFO_KEY, JSON.stringify(info));
+        }
+    }
+
+    // Contrainte entre les deux files : { reason, until } ou null
+    function getLaneBlocker(planetId, lane, item, now = Date.now()) {
+        const info = loadConstructionInfo()[planetId] || {};
+        if (lane === 'lifeform') {
+            const b = info.building;
+            if (b && b.end > now && LIFEFORM_BLOCKING_BUILDINGS[b.technologyId]) {
+                return { reason: `${LIFEFORM_BLOCKING_BUILDINGS[b.technologyId]} en construction`, until: b.end };
+            }
+        } else if (item && LIFEFORM_BLOCKING_BUILDINGS[item.technologyId]) {
+            const l = info.lifeform;
+            if (l && l.end > now) {
+                return { reason: 'Bâtiment de forme de vie en construction', until: l.end };
+            }
+        }
+        return null;
     }
 
     function getBuildingTile(technologyId) {
@@ -3444,9 +3540,9 @@
         return parts.length > 1 ? parts.slice(1).join(' ').replace(/<[^>]+>/g, '').trim() : '';
     }
 
-    // Fin (heure locale, ms) de la construction de bâtiment en cours sur la planète affichée
-    function getConstructionEnd() {
-        const box = document.querySelector('#productionboxbuildingcomponent');
+    // Fin (heure locale, ms) de la construction en cours de cette file sur la planète affichée
+    function getConstructionEnd(lane = 'building') {
+        const box = document.querySelector(BUILD_LANES[lane].box);
         if (!box) return null;
         // Même vide (« Aucun bâtiment en construction »), le cadre garde table.construction.active :
         // seul le compte à rebours indique une construction réelle
@@ -3458,11 +3554,13 @@
     function addToBuildQueue(tile) {
         const body = getCurrentBody();
         const component = getCurrentPage();
-        if (!body.id || !BUILDING_PAGES.includes(component)) return;
+        const lane = getLaneOfComponent(component);
+        if (!body.id || !lane) return;
 
         const technologyId = parseInt(tile.dataset.technology);
+        const key = getQueueKey(body.id, lane);
         const queues = loadBuildQueues();
-        const queue = queues[body.id] || { items: [] };
+        const queue = queues[key] || { items: [] };
         queue.type = body.type;
         queue.coords = body.coords;
         queue.name = body.name;
@@ -3478,16 +3576,16 @@
         });
         queue.nextCheckAt = 0;
         queue.status = '';
-        queues[body.id] = queue;
+        queues[key] = queue;
         saveBuildQueues(queues);
 
         console.log(`[Build] Ajout file ${body.coords} (${body.type}): ${queue.items[queue.items.length - 1].name} niv. ${targetLevel}`);
         renderBuildQueueUI();
     }
 
-    function removeFromBuildQueue(planetId, index) {
+    function removeFromBuildQueue(key, index) {
         const queues = loadBuildQueues();
-        const queue = queues[planetId];
+        const queue = queues[key];
         if (!queue) return;
         const [removed] = queue.items.splice(index, 1);
         // Les niveaux suivants du même bâtiment sont décalés d'un cran
@@ -3500,15 +3598,15 @@
         }
         queue.nextCheckAt = 0;
         if (queue.items.length === 0) {
-            delete queues[planetId];
+            delete queues[key];
         }
         saveBuildQueues(queues);
         renderBuildQueueUI();
     }
 
-    function moveUpInBuildQueue(planetId, index) {
+    function moveUpInBuildQueue(key, index) {
         const queues = loadBuildQueues();
-        const queue = queues[planetId];
+        const queue = queues[key];
         if (!queue || index <= 0) return;
         const items = queue.items;
         // Un niveau ne peut pas passer devant le niveau précédent du même bâtiment
@@ -3519,9 +3617,9 @@
         renderBuildQueueUI();
     }
 
-    function clearBuildQueue(planetId) {
+    function clearBuildQueue(key) {
         const queues = loadBuildQueues();
-        delete queues[planetId];
+        delete queues[key];
         saveBuildQueues(queues);
         renderBuildQueueUI();
     }
@@ -3692,17 +3790,31 @@
     function refreshBuildEstimateHere() {
         const planetId = getCurrentPlanetId();
         const queues = loadBuildQueues();
-        const queue = queues[planetId];
-        if (!queue || queue.items.length === 0 || !isCostForItem(queue.cost, queue.items[0])) return;
+        const now = Date.now();
+        let changed = false;
 
-        const estimate = estimateBuildReady(queue.cost);
-        if (!estimate || estimate.storageBlocked) return;
-        queue.readyAt = estimate.readyAt;
-        if (estimate.readyAt && estimate.readyAt + 5000 < (queue.nextCheckAt || 0)) {
-            console.log(`[Build] Ressources prêtes plus tôt que prévu (${formatClock(estimate.readyAt)}), vérification avancée`);
-            queue.nextCheckAt = Math.max(Date.now(), estimate.readyAt + 5000);
-        }
-        saveBuildQueues(queues);
+        Object.keys(BUILD_LANES).forEach(lane => {
+            const queue = queues[getQueueKey(planetId, lane)];
+            if (!queue || queue.items.length === 0 || !isCostForItem(queue.cost, queue.items[0])) return;
+            // Construction en cours dans cette file : l'échéance reste la fin de construction
+            if ((queue.busyUntil || 0) > now) return;
+
+            const estimate = estimateBuildReady(queue.cost);
+            if (!estimate || estimate.storageBlocked || estimate.energyBlocked) return;
+            queue.readyAt = estimate.readyAt;
+            changed = true;
+
+            if (estimate.readyAt) {
+                const blocker = getLaneBlocker(planetId, lane, queue.items[0], now);
+                const target = Math.max(now, estimate.readyAt + 5000, blocker ? blocker.until + 5000 : 0);
+                if (target < (queue.nextCheckAt || 0)) {
+                    console.log(`[Build] Ressources prêtes plus tôt que prévu (${formatClock(estimate.readyAt)}), vérification avancée`);
+                    queue.nextCheckAt = target;
+                }
+            }
+        });
+
+        if (changed) saveBuildQueues(queues);
     }
 
     async function upgradeBuilding(tile, technologyId) {
@@ -3720,12 +3832,18 @@
         upgradeBtn.click();
     }
 
-    // Traite la file de la planète affichée. Retourne le composant à ouvrir si la page ne convient pas.
-    async function evaluateBuildQueueHere() {
+    // Traite la file `key` sur la page affichée (planète et page de la bonne file).
+    // Retourne le composant à ouvrir si le prochain élément est sur une autre page.
+    async function evaluateBuildQueueHere(key) {
+        const planetId = getQueuePlanetId(key);
+        const lane = getQueueLane(key);
+        const laneLabel = lane === 'lifeform' ? 'File formes de vie' : 'File de construction';
         const body = getCurrentBody();
         const component = getCurrentPage();
+        if (body.id !== planetId || getLaneOfComponent(component) !== lane) return null;
+
         const queues = loadBuildQueues();
-        const queue = queues[body.id];
+        const queue = queues[key];
         if (!queue || queue.items.length === 0) return null;
 
         // Retire les niveaux déjà atteints (lancés par le plugin ou à la main)
@@ -3740,24 +3858,26 @@
         }
 
         if (queue.items.length === 0) {
-            delete queues[body.id];
+            delete queues[key];
             saveBuildQueues(queues);
-            notifyDiscord(`✅ **File de construction terminée** sur ${formatBodyLabel(queue)}`);
+            notifyDiscord(`✅ **${laneLabel} terminée** sur ${formatBodyLabel(queue)}`);
             renderBuildQueueUI();
             return null;
         }
 
-        const constructionEnd = getConstructionEnd();
+        const constructionEnd = getConstructionEnd(lane);
         if (constructionEnd) {
             // Fin déjà passée : OGame finalise la construction, on revient dans quelques secondes
             queue.status = constructionEnd > Date.now() ? 'Construction en cours' : 'Construction en cours de finalisation';
             queue.nextCheckAt = Math.max(constructionEnd, Date.now()) + 5000;
+            queue.busyUntil = constructionEnd;
             queue.readyAt = null;
             saveBuildQueues(queues);
-            console.log(`[Build] Construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
+            console.log(`[Build] ${laneLabel} : construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
             renderBuildQueueUI();
             return null;
         }
+        queue.busyUntil = 0;
 
         const item = queue.items[0];
         if (item.component !== component) {
@@ -3765,12 +3885,23 @@
             return item.component;
         }
 
+        // Contrainte entre files (usine de robots/nanites ↔ formes de vie), connue même si cette page ne l'affiche pas
+        const blocker = getLaneBlocker(planetId, lane, item);
+        if (blocker) {
+            queue.status = blocker.reason;
+            queue.nextCheckAt = blocker.until + 5000;
+            saveBuildQueues(queues);
+            console.log(`[Build] ${laneLabel} : ${blocker.reason}, attente jusqu'à ${formatClock(blocker.until)}`);
+            renderBuildQueueUI();
+            return null;
+        }
+
         const tile = getBuildingTile(item.technologyId);
         if (!tile) {
             queue.items.shift();
             saveBuildQueues(queues);
             console.log(`[Build] ${item.name} introuvable sur ${body.coords}, retiré de la file`);
-            notifyDiscord(`⚠️ **File de construction** : ${item.name} introuvable sur ${formatBodyLabel(queue)}, retiré de la file`);
+            notifyDiscord(`⚠️ **${laneLabel}** : ${item.name} introuvable sur ${formatBodyLabel(queue)}, retiré de la file`);
             renderBuildQueueUI();
             return null;
         }
@@ -3784,13 +3915,14 @@
                 queue.nextCheckAt = Date.now() + 30 * 1000;
                 saveBuildQueues(queues);
                 await upgradeBuilding(tile, item.technologyId);
-                notifyDiscord(`🏗️ **Construction lancée** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
+                const icon = lane === 'lifeform' ? '🧬' : '🏗️';
+                notifyDiscord(`${icon} **Construction lancée** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
             } catch (e) {
                 console.log('[Build] Échec du lancement:', e);
                 const current = loadBuildQueues();
-                if (current[body.id]) {
-                    current[body.id].status = `Échec du lancement : ${e.message}`;
-                    current[body.id].nextCheckAt = recheckAt;
+                if (current[key]) {
+                    current[key].status = `Échec du lancement : ${e.message}`;
+                    current[key].nextCheckAt = recheckAt;
                     saveBuildQueues(current);
                 }
             }
@@ -3815,7 +3947,8 @@
                 } else if (estimate.energyBlocked) {
                     queue.status = 'Énergie insuffisante';
                 } else if (estimate.readyAt) {
-                    // Les ressources sont là mais OGame refuse encore : on garde le motif OGame et la revérification normale
+                    // Les ressources sont là mais OGame refuse encore (usine en extension, chantier occupé…) :
+                    // on garde le motif OGame et la revérification normale
                     queue.nextCheckAt = estimate.readyAt > Date.now()
                         ? estimate.readyAt + 5000
                         : recheckAt;
@@ -3828,6 +3961,12 @@
         return null;
     }
 
+    function navigateToBuildPage(key, component) {
+        const planetId = getQueuePlanetId(key);
+        saveBuildState({ active: true, key, planetId, component, startedAt: Date.now(), attempts: 0 });
+        window.location.href = getBuildPageUrl(component, planetId);
+    }
+
     // freshPage : la page vient d'être chargée, son contenu reflète l'état réel du jeu.
     // Sinon (minuteur, cycle), le DOM peut être figé depuis des minutes : on recharge toujours.
     async function checkBuildQueues(freshPage = false) {
@@ -3837,40 +3976,49 @@
         const queues = loadBuildQueues();
         const now = Date.now();
         const currentId = getCurrentPlanetId();
+        const currentLane = getLaneOfComponent(getCurrentPage());
+        let changed = false;
 
         // Planète/lune abandonnée ou détruite : sa file ne peut plus être traitée
         const bodyIds = new Set(getAllCelestialBodies().map(b => b.id));
         if (bodyIds.size > 0) {
-            const orphans = Object.keys(queues).filter(id => !bodyIds.has(id));
-            if (orphans.length > 0) {
-                orphans.forEach(id => {
-                    console.log(`[Build] ${queues[id].coords} n'existe plus, file supprimée`);
-                    notifyDiscord(`⚠️ **File de construction supprimée** : ${formatBodyLabel(queues[id])} n'existe plus`);
-                    delete queues[id];
-                });
-                saveBuildQueues(queues);
-            }
+            Object.keys(queues).filter(key => !bodyIds.has(getQueuePlanetId(key))).forEach(key => {
+                console.log(`[Build] ${queues[key].coords} n'existe plus, file supprimée`);
+                notifyDiscord(`⚠️ **File de construction supprimée** : ${formatBodyLabel(queues[key])} n'existe plus`);
+                delete queues[key];
+                changed = true;
+            });
         }
 
-        const due = Object.keys(queues).filter(id => queues[id].items.length > 0 && (queues[id].nextCheckAt || 0) <= now);
+        let due = Object.keys(queues).filter(key => queues[key].items.length > 0 && (queues[key].nextCheckAt || 0) <= now);
+
+        // File bloquée par l'autre (usine de robots/nanites ↔ formes de vie) : on attend sans naviguer
+        due = due.filter(key => {
+            const blocker = getLaneBlocker(getQueuePlanetId(key), getQueueLane(key), queues[key].items[0], now);
+            if (!blocker) return true;
+            queues[key].status = blocker.reason;
+            queues[key].nextCheckAt = blocker.until + 5000;
+            changed = true;
+            return false;
+        });
+
+        if (changed) saveBuildQueues(queues);
         if (due.length === 0) return;
 
-        // La planète affichée d'abord : pas de navigation si on est déjà sur la bonne page
-        due.sort((a, b) => (b === currentId) - (a === currentId));
-        const planetId = due[0];
-        const firstItem = queues[planetId].items[0];
+        // D'abord la file de la page affichée (pas de navigation), puis la planète affichée
+        const score = key => (getQueuePlanetId(key) === currentId ? 2 : 0) + (getQueueLane(key) === currentLane ? 1 : 0);
+        due.sort((a, b) => score(b) - score(a));
+        const key = due[0];
+        const firstItem = queues[key].items[0];
 
-        if (freshPage && planetId === currentId && BUILDING_PAGES.includes(getCurrentPage())) {
-            const neededComponent = await evaluateBuildQueueHere();
-            if (!neededComponent) return;
-            saveBuildState({ active: true, planetId, component: neededComponent, startedAt: Date.now(), attempts: 0 });
-            window.location.href = getBuildPageUrl(neededComponent, planetId);
+        if (freshPage && getQueuePlanetId(key) === currentId && getQueueLane(key) === currentLane) {
+            const neededComponent = await evaluateBuildQueueHere(key);
+            if (neededComponent) navigateToBuildPage(key, neededComponent);
             return;
         }
 
-        console.log(`[Build] Navigation vers ${queues[planetId].coords} (${firstItem.component}) pour la file de construction`);
-        saveBuildState({ active: true, planetId, component: firstItem.component, startedAt: Date.now(), attempts: 0 });
-        window.location.href = getBuildPageUrl(firstItem.component, planetId);
+        console.log(`[Build] Navigation vers ${queues[key].coords} (${firstItem.component}) pour la file de construction`);
+        navigateToBuildPage(key, firstItem.component);
     }
 
     // Déclenche la vérification pile à l'échéance la plus proche, sans attendre le cycle
@@ -3904,6 +4052,7 @@
     async function processBuildState() {
         const state = loadBuildState();
         if (!state || !state.active) return;
+        const key = state.key || getQueueKey(state.planetId, getLaneOfComponent(state.component));
 
         if (Date.now() - state.startedAt > 2 * 60 * 1000) {
             console.log('[Build] État de navigation expiré, abandon');
@@ -3917,13 +4066,13 @@
                 console.log('[Build] Impossible d\'atteindre la page cible, abandon');
                 clearBuildState();
                 const queues = loadBuildQueues();
-                if (queues[state.planetId]) {
-                    queues[state.planetId].nextCheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 60) * 1000;
+                if (queues[key]) {
+                    queues[key].nextCheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 60) * 1000;
                     saveBuildQueues(queues);
                 }
                 return;
             }
-            saveBuildState({ ...state, attempts: state.attempts + 1 });
+            saveBuildState({ ...state, key, attempts: state.attempts + 1 });
             window.location.href = getBuildPageUrl(state.component, state.planetId);
             return;
         }
@@ -3936,11 +4085,8 @@
             return;
         }
         await wait(500);
-        const neededComponent = await evaluateBuildQueueHere();
-        if (neededComponent) {
-            saveBuildState({ active: true, planetId: state.planetId, component: neededComponent, startedAt: Date.now(), attempts: 0 });
-            window.location.href = getBuildPageUrl(neededComponent, state.planetId);
-        }
+        const neededComponent = await evaluateBuildQueueHere(key);
+        if (neededComponent) navigateToBuildPage(key, neededComponent);
     }
 
     function injectBuildQueueStyle() {
@@ -4000,6 +4146,11 @@
                 font-weight: bold;
                 margin-bottom: 4px;
             }
+            #ogame-plugin-buildqueue .bq-title:not(:first-child) {
+                margin-top: 10px;
+                padding-top: 8px;
+                border-top: 1px solid #2c4a5a;
+            }
             #ogame-plugin-buildqueue .bq-status {
                 color: #cfaf6f;
                 font-size: 10px;
@@ -4044,10 +4195,11 @@
     }
 
     function renderBuildTileButtons() {
-        if (!BUILDING_PAGES.includes(getCurrentPage())) return;
-
-        const queue = loadBuildQueues()[getCurrentPlanetId()];
         const component = getCurrentPage();
+        const lane = getLaneOfComponent(component);
+        if (!lane) return;
+
+        const queue = loadBuildQueues()[getQueueKey(getCurrentPlanetId(), lane)];
 
         getBuildingTiles().forEach(tile => {
             if (getComputedStyle(tile).position === 'static') {
@@ -4058,7 +4210,9 @@
                 const addBtn = document.createElement('span');
                 addBtn.className = 'ogp-queue-add';
                 addBtn.textContent = '+';
-                addBtn.title = 'Ajouter un niveau à la file de construction';
+                addBtn.title = lane === 'lifeform'
+                    ? 'Ajouter un niveau à la file formes de vie'
+                    : 'Ajouter un niveau à la file de construction';
                 ['mousedown', 'mouseup'].forEach(type => addBtn.addEventListener(type, e => e.stopPropagation()));
                 addBtn.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -4084,18 +4238,31 @@
         });
     }
 
+    function getBuildEstimateText(queue) {
+        const estimate = isCostForItem(queue.cost, queue.items[0]) ? estimateBuildReady(queue.cost) : null;
+        if (!estimate) return null;
+        const missingText = formatMissing(estimate.missing);
+        if (!missingText) return '✅ Ressources disponibles';
+        if (estimate.storageBlocked) return `Manque : ${missingText} · ${estimate.storageBlocked}`;
+        if (estimate.energyBlocked) return `Manque : ${missingText} · production d'énergie à augmenter`;
+        if (estimate.readyAt) return `Manque : ${missingText} · prêt vers ${formatClock(estimate.readyAt)} (dans ${formatDelay(estimate.readyAt - Date.now())})`;
+        return `Manque : ${missingText} · production nulle`;
+    }
+
     function renderBuildQueuePanel() {
         const queues = loadBuildQueues();
         const currentId = getCurrentPlanetId();
-        const queue = queues[currentId];
+        const laneKeys = Object.keys(BUILD_LANES)
+            .map(lane => ({ lane, key: getQueueKey(currentId, lane) }))
+            .filter(({ key }) => queues[key] && queues[key].items.length > 0);
         const othersCount = Object.keys(queues)
-            .filter(id => id !== currentId)
-            .reduce((sum, id) => sum + queues[id].items.length, 0);
+            .filter(key => getQueuePlanetId(key) !== currentId)
+            .reduce((sum, key) => sum + queues[key].items.length, 0);
 
         let panel = document.getElementById('ogame-plugin-buildqueue');
         const onBuildingPage = BUILDING_PAGES.includes(getCurrentPage());
 
-        if ((!queue || queue.items.length === 0) && !(onBuildingPage && othersCount > 0)) {
+        if (laneKeys.length === 0 && !(onBuildingPage && othersCount > 0)) {
             if (panel) panel.remove();
             return;
         }
@@ -4107,8 +4274,8 @@
                 const btn = e.target.closest('button[data-action]');
                 if (!btn) return;
                 const index = parseInt(btn.dataset.index);
-                if (btn.dataset.action === 'remove') removeFromBuildQueue(currentId, index);
-                if (btn.dataset.action === 'up') moveUpInBuildQueue(currentId, index);
+                if (btn.dataset.action === 'remove') removeFromBuildQueue(btn.dataset.key, index);
+                if (btn.dataset.action === 'up') moveUpInBuildQueue(btn.dataset.key, index);
             });
             document.body.appendChild(panel);
         }
@@ -4116,46 +4283,35 @@
         // Partie statique (reconstruite seulement si elle change) ; les textes qui bougent
         // chaque seconde sont mis à jour à part pour ne pas casser les clics sur ▲ / ✕
         let html = '';
-        let nextText = '';
-        let estimateText = '';
-        if (queue && queue.items.length > 0) {
-            html += `<div class="bq-title">🏗️ File de construction (${queue.items.length})</div>`;
-            if (queue.nextCheckAt && queue.nextCheckAt > Date.now()) {
-                nextText = ` · vérif. dans ${formatDelay(queue.nextCheckAt - Date.now())}`;
-            }
+        const dynamic = [];
+        laneKeys.forEach(({ lane, key }) => {
+            const queue = queues[key];
+            html += `<div class="bq-title">${BUILD_LANES[lane].title} (${queue.items.length})</div>`;
             if (!CONFIG.buildQueue.enabled) {
                 html += `<div class="bq-status">⏸️ Lancement automatique désactivé</div>`;
             } else {
-                html += `<div class="bq-status">${queue.status || ''}<span class="bq-next"></span></div>`;
+                html += `<div class="bq-status">${queue.status || ''}<span class="bq-next" data-key="${key}"></span></div>`;
             }
-
-            const estimate = isCostForItem(queue.cost, queue.items[0]) ? estimateBuildReady(queue.cost) : null;
-            if (estimate) {
-                const missingText = formatMissing(estimate.missing);
-                if (!missingText) {
-                    estimateText = '✅ Ressources disponibles';
-                } else if (estimate.storageBlocked) {
-                    estimateText = `Manque : ${missingText} · ${estimate.storageBlocked}`;
-                } else if (estimate.energyBlocked) {
-                    estimateText = `Manque : ${missingText} · production d'énergie à augmenter`;
-                } else if (estimate.readyAt) {
-                    estimateText = `Manque : ${missingText} · prêt vers ${formatClock(estimate.readyAt)} (dans ${formatDelay(estimate.readyAt - Date.now())})`;
-                } else {
-                    estimateText = `Manque : ${missingText} · production nulle`;
-                }
-                html += `<div class="bq-estimate"></div>`;
+            const nextText = queue.nextCheckAt && queue.nextCheckAt > Date.now()
+                ? ` · vérif. dans ${formatDelay(queue.nextCheckAt - Date.now())}`
+                : '';
+            const estimateText = getBuildEstimateText(queue);
+            if (estimateText !== null) {
+                html += `<div class="bq-estimate" data-key="${key}"></div>`;
             }
+            dynamic.push({ key, nextText, estimateText });
 
             queue.items.forEach((item, index) => {
                 html += `
                     <div class="bq-item ${index === 0 ? 'first' : ''}">
                         <span class="bq-name">${index + 1}. ${item.name} <b>niv. ${item.targetLevel}</b></span>
-                        ${index > 0 ? `<button data-action="up" data-index="${index}" title="Monter">▲</button>` : ''}
-                        <button data-action="remove" data-index="${index}" title="Retirer">✕</button>
+                        ${index > 0 ? `<button data-action="up" data-key="${key}" data-index="${index}" title="Monter">▲</button>` : ''}
+                        <button data-action="remove" data-key="${key}" data-index="${index}" title="Retirer">✕</button>
                     </div>
                 `;
             });
-        } else {
+        });
+        if (laneKeys.length === 0) {
             html += `<div class="bq-title">🏗️ File de construction</div>`;
         }
         if (othersCount > 0) {
@@ -4165,10 +4321,12 @@
             panel.dataset.html = html;
             panel.innerHTML = html;
         }
-        const nextEl = panel.querySelector('.bq-next');
-        if (nextEl) nextEl.textContent = nextText;
-        const estimateEl = panel.querySelector('.bq-estimate');
-        if (estimateEl) estimateEl.textContent = estimateText;
+        dynamic.forEach(({ key, nextText, estimateText }) => {
+            const nextEl = panel.querySelector(`.bq-next[data-key="${key}"]`);
+            if (nextEl) nextEl.textContent = nextText;
+            const estimateEl = panel.querySelector(`.bq-estimate[data-key="${key}"]`);
+            if (estimateEl) estimateEl.textContent = estimateText || '';
+        });
     }
 
     function renderBuildQueueUI() {
@@ -4182,22 +4340,23 @@
         if (!container) return;
 
         const queues = loadBuildQueues();
-        const ids = Object.keys(queues).filter(id => queues[id].items.length > 0);
-        if (ids.length === 0) {
-            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les bâtiments (pages Ressources / Installations).</div>';
+        const keys = Object.keys(queues).filter(key => queues[key].items.length > 0);
+        if (keys.length === 0) {
+            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les bâtiments (pages Ressources, Installations et Formes de vie).</div>';
             return;
         }
 
-        container.innerHTML = ids.map(id => {
-            const q = queues[id];
+        container.innerHTML = keys.map(key => {
+            const q = queues[key];
             const next = q.items[0];
+            const laneIcon = getQueueLane(key) === 'lifeform' ? '🧬' : '🏗️';
             return `
                 <div class="body-expedition-row">
                     <div class="body-info">
-                        <span class="body-name">${formatBodyLabel(q)}</span>
+                        <span class="body-name">${laneIcon} ${formatBodyLabel(q)}</span>
                         <span class="body-coords">${q.items.length} élément(s) · prochain : ${next.name} niv. ${next.targetLevel}${q.status ? ` · ${q.status}` : ''}${q.readyAt && isCostForItem(q.cost, next) ? ` · prêt vers ${formatClock(q.readyAt)}` : ''}</span>
                     </div>
-                    <button class="refresh-btn" data-clear-queue="${id}" title="Vider la file">🗑️</button>
+                    <button class="refresh-btn" data-clear-queue="${key}" title="Vider la file">🗑️</button>
                 </div>
             `;
         }).join('');
@@ -4399,6 +4558,8 @@
         }
 
         createConfigPanel();
+        // Mémorise les constructions visibles sur cette page (bâtiment et/ou formes de vie)
+        recordConstructionInfoHere();
         initBuildQueueUI();
 
         if (!CONFIG.discordWebhook) {

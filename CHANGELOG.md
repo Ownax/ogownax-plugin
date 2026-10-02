@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.11.0
+
+- **File « 🧬 Formes de vie »** par planète/lune, indépendante de la file des bâtiments (OGame a un emplacement de construction séparé) : bouton « + » sur la page Formes de vie, même fonctionnement (lancement auto, ressources manquantes, heure estimée, notifications).
+- Panneau de file à deux sections (bâtiments / formes de vie) ; liste ⚙️ → Construction avec les deux types de files.
+- **Contrainte Usine de robots / Usine de nanites** : pendant leur extension, la file formes de vie attend la fin de cette construction (heure mémorisée quand elle est vue sur Ressources/Installations/Vue d'ensemble, car la page Formes de vie ne l'affiche pas), sans navigation ni tentative inutile. Sens inverse appliqué aussi : une usine de robots/nanites en tête de file attend la fin d'une construction formes de vie.
+- Si la fin n'est pas connue, le message OGame (« Usine de robots est en cours d'extension ») est affiché et la revérification classique s'applique.
+
 ## 1.10.2
 
 - File de construction : prise en compte de l'énergie requise (ex. Terraformeur). Si le bilan énergétique est insuffisant, le panneau indique l'énergie manquante et « Énergie insuffisante » au lieu de « Ressources disponibles » (aucune heure estimée : il faut augmenter la production d'énergie).
