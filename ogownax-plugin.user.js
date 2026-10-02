@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.11.0
+// @version      1.11.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3912,7 +3912,7 @@
             try {
                 console.log(`[Build] Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
                 queue.status = 'Lancement…';
-                queue.nextCheckAt = Date.now() + 30 * 1000;
+                queue.nextCheckAt = Date.now() + 10 * 1000;
                 saveBuildQueues(queues);
                 await upgradeBuilding(tile, item.technologyId);
                 const icon = lane === 'lifeform' ? '🧬' : '🏗️';

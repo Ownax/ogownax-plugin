@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.11.1
+
+- File de construction : contrôle après « Lancement… » ramené de 30 s à 10 s.
+
 ## 1.11.0
 
 - **File « 🧬 Formes de vie »** par planète/lune, indépendante de la file des bâtiments (OGame a un emplacement de construction séparé) : bouton « + » sur la page Formes de vie, même fonctionnement (lancement auto, ressources manquantes, heure estimée, notifications).
