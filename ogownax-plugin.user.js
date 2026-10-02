@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.12.0
+// @version      1.12.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3940,8 +3940,26 @@
             queue.readyAt = estimate.readyAt;
             changed = true;
 
-            // Ressources déjà toutes là : c'est l'évaluation sur la page qui décide (pas de rechargement en plus)
-            if (!estimate.readyAt || estimate.readyAt <= now) return;
+            if (!estimate.readyAt) return;
+
+            if (estimate.readyAt <= now) {
+                // Les ressources qui manquaient lors de la dernière vérification sont arrivées
+                // (récompense, flotte…) : on vérifie tout de suite. Une seule fois par vérification,
+                // pour ne pas boucler quand OGame bloque pour une autre raison (chantier occupé, usine…).
+                // (files enregistrées avant la 1.12.1 : pas de drapeau, on se fie au statut OGame)
+                const awaiting = queue.awaitingResources
+                    || (queue.awaitingResources === undefined && /ressource/i.test(queue.status || ''));
+                if (awaiting) {
+                    queue.awaitingResources = false;
+                    const blocker = getLaneBlocker(planetId, lane, queue.items[0], now);
+                    const target = Math.max(now + 2000, blocker ? blocker.until + 5000 : 0);
+                    if (target < (queue.nextCheckAt || 0)) {
+                        buildLog(`${queue.items[0].name} niv. ${queue.items[0].targetLevel} : ressources disponibles, vérification immédiate`);
+                        queue.nextCheckAt = target;
+                    }
+                }
+                return;
+            }
 
             // Échéance recalée dans les deux sens : plus tôt (flotte arrivée, production en hausse)
             // ou plus tard (ressources dépensées, production en baisse)
@@ -3987,6 +4005,8 @@
         const queues = loadBuildQueues();
         const queue = queues[key];
         if (!queue || queue.items.length === 0) return null;
+        // Réarmé seulement si cette vérification conclut à un manque de ressources
+        queue.awaitingResources = false;
 
         // Retire les niveaux déjà atteints (lancés par le plugin ou à la main)
         const before = queue.items.length;
@@ -4090,6 +4110,8 @@
                     queue.status = 'Énergie insuffisante';
                 } else if (estimate.readyAt && estimate.readyAt > Date.now()) {
                     queue.nextCheckAt = estimate.readyAt + 5000;
+                    // Si ces ressources arrivent plus tôt (récompense, flotte), refreshBuildEstimateHere vérifiera aussitôt
+                    queue.awaitingResources = true;
                     buildLog(`${item.name} niv. ${item.targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)}`);
                 } else if (estimate.readyAt && /ressource/i.test(reason)) {
                     // Mon calcul dit « prêt » mais OGame dit « pas assez » (quelques unités d'écart, dépense entre-temps…) :

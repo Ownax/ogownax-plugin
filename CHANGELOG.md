@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.12.1
+
+- Correction : quand les ressources qui manquaient arrivent d'un coup (récompense, flotte), la vérification est faite **tout de suite** au lieu de rester à l'échéance prévue (le panneau affichait « ⏳ Ressources presque disponibles » sans rien lancer). Une seule fois par vérification, pour ne pas boucler quand OGame bloque pour une autre raison.
+
 ## 1.12.0
 
 - File de construction : l'heure estimée et le minuteur se recalculent quand les ressources changent **sans rechargement** :
