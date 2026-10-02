@@ -1,0 +1,6 @@
+.env
+*.local.js
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
