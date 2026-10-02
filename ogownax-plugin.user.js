@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.9.0
+// @version      1.9.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3379,6 +3379,7 @@
 
     function saveBuildQueues(queues) {
         localStorage.setItem(BUILD_QUEUE_KEY, JSON.stringify(queues));
+        scheduleNextBuildCheck();
     }
 
     function loadBuildState() {
@@ -3585,8 +3586,9 @@
 
         const constructionEnd = getConstructionEnd();
         if (constructionEnd) {
-            queue.status = 'Construction en cours';
-            queue.nextCheckAt = constructionEnd + 5000;
+            // Fin déjà passée : OGame finalise la construction, on revient dans quelques secondes
+            queue.status = constructionEnd > Date.now() ? 'Construction en cours' : 'Construction en cours de finalisation';
+            queue.nextCheckAt = Math.max(constructionEnd, Date.now()) + 5000;
             saveBuildQueues(queues);
             console.log(`[Build] Construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
             renderBuildQueueUI();
@@ -3641,7 +3643,9 @@
         return null;
     }
 
-    async function checkBuildQueues() {
+    // freshPage : la page vient d'être chargée, son contenu reflète l'état réel du jeu.
+    // Sinon (minuteur, cycle), le DOM peut être figé depuis des minutes : on recharge toujours.
+    async function checkBuildQueues(freshPage = false) {
         if (!CONFIG.buildQueue.enabled) return;
         if (isActionInProgress()) return;
 
@@ -3656,7 +3660,7 @@
         const planetId = due[0];
         const firstItem = queues[planetId].items[0];
 
-        if (planetId === currentId && BUILDING_PAGES.includes(getCurrentPage())) {
+        if (freshPage && planetId === currentId && BUILDING_PAGES.includes(getCurrentPage())) {
             const neededComponent = await evaluateBuildQueueHere();
             if (!neededComponent) return;
             saveBuildState({ active: true, planetId, component: neededComponent, startedAt: Date.now(), attempts: 0 });
@@ -3667,6 +3671,34 @@
         console.log(`[Build] Navigation vers ${queues[planetId].coords} (${firstItem.component}) pour la file de construction`);
         saveBuildState({ active: true, planetId, component: firstItem.component, startedAt: Date.now(), attempts: 0 });
         window.location.href = getBuildPageUrl(firstItem.component, planetId);
+    }
+
+    // Déclenche la vérification pile à l'échéance la plus proche, sans attendre le cycle
+    let buildCheckTimer = null;
+    function scheduleNextBuildCheck() {
+        if (buildCheckTimer) {
+            clearTimeout(buildCheckTimer);
+            buildCheckTimer = null;
+        }
+        if (!CONFIG.buildQueue.enabled) return;
+
+        const queues = loadBuildQueues();
+        const times = Object.values(queues)
+            .filter(q => q.items.length > 0)
+            .map(q => q.nextCheckAt || 0);
+        if (times.length === 0) return;
+
+        const delay = Math.max(1000, Math.min(...times) - Date.now());
+        buildCheckTimer = setTimeout(() => {
+            buildCheckTimer = null;
+            if (isActionInProgress()) {
+                // Une autre action (expédition, panic…) navigue : on réessaie plus tard
+                buildCheckTimer = setTimeout(scheduleNextBuildCheck, 15000);
+                return;
+            }
+            console.log('[Build] Échéance atteinte, vérification de la file');
+            checkBuildQueues(false);
+        }, delay);
     }
 
     async function processBuildState() {
@@ -4229,7 +4261,8 @@
 
             checkAlerts();
             checkExpeditions();
-            await checkBuildQueues();
+            await checkBuildQueues(true);
+            scheduleNextBuildCheck();
             startExpeditionChecker();
             scheduleNextClick();
         }

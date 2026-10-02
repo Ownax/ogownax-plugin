@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.1
+
+- Correction file de construction : à la fin du compte à rebours, la page est rechargée (ou la bonne planète/page ouverte) au lieu de relire une page figée qui affichait encore « Construction en cours » indéfiniment.
+- La vérification se déclenche pile à l'échéance (minuteur dédié) au lieu d'attendre le cycle de 60 s.
+- Une fin de construction déjà passée est traitée comme « en cours de finalisation » (nouvel essai 5 s plus tard).
+
 ## 1.9.0
 
 - Panneau de configuration réorganisé en onglets : 🛡️ Défense (panic + repli), 🚀 Expéditions, 🏗️ Construction, 🔔 Alertes (Discord + délais entre alertes), ⚙️ Général (cycle de vérification, clic aléatoire, reconnexion). Le dernier onglet ouvert est mémorisé ; les boutons Sauvegarder/Reset/Fermer restent visibles en bas.
