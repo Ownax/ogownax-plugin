@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.9.3
+// @version      1.10.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3544,6 +3544,153 @@
         return `${m}:${s.toString().padStart(2, '0')}`;
     }
 
+    const BUILD_RESOURCES = ['metal', 'crystal', 'deuterium'];
+    const RESOURCE_LABELS = { metal: 'métal', crystal: 'cristal', deuterium: 'deutérium' };
+    const PAGE_LOADED_AT = Date.now();
+    let pageResourcesCache;
+
+    // Stock, production/s (bonus compris) et stockage de la planète affichée,
+    // lus dans l'appel reloadResources({...}) que la page contient au chargement
+    function getPageResources() {
+        if (pageResourcesCache !== undefined) return pageResourcesCache;
+        pageResourcesCache = null;
+        const script = [...document.scripts].map(s => s.textContent).find(t => t.includes('reloadResources({'));
+        if (!script) return null;
+
+        const start = script.indexOf('reloadResources({') + 'reloadResources('.length;
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let i = start; i < script.length; i++) {
+            const c = script[i];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c === '\\') escaped = true;
+                else if (c === '"') inString = false;
+                continue;
+            }
+            if (c === '"') inString = true;
+            else if (c === '{') depth++;
+            else if (c === '}' && --depth === 0) {
+                try {
+                    const resources = JSON.parse(script.slice(start, i + 1)).resources;
+                    pageResourcesCache = {};
+                    BUILD_RESOURCES.forEach(r => {
+                        const res = resources[r] || {};
+                        pageResourcesCache[r] = {
+                            amount: Number(res.amount) || 0,
+                            production: Number(res.production) || 0,
+                            storage: Number(res.storage) || Infinity,
+                        };
+                    });
+                } catch (e) {
+                    console.log('[Build] Lecture des ressources impossible:', e);
+                }
+                break;
+            }
+        }
+        return pageResourcesCache;
+    }
+
+    // Stock estimé à un instant donné : stock au chargement + production écoulée (plafonnée au stockage)
+    function getResourceAmountAt(resource, time) {
+        const res = getPageResources()?.[resource];
+        if (!res) return null;
+        if (res.amount >= res.storage) return res.amount;
+        const produced = res.production * Math.max(0, time - PAGE_LOADED_AT) / 1000;
+        return Math.min(res.storage, res.amount + produced);
+    }
+
+    function isCostForItem(cost, item) {
+        return !!cost && cost.technologyId === item.technologyId && cost.level === item.targetLevel;
+    }
+
+    // Coût exact (bonus compris) lu dans le panneau de détail OGame
+    async function readBuildingCost(tile, item) {
+        const selector = `#technologydetails[data-technology-id="${item.technologyId}"] .costs`;
+        const alreadyOpen = !!document.querySelector(selector);
+        try {
+            if (!alreadyOpen) {
+                (tile.querySelector('.icon') || tile).click();
+            }
+            const costs = await waitForElement(selector, 8000);
+            const levelMatch = (costs.querySelector('p')?.textContent || '').match(/(\d+)\s*:?\s*$/);
+            const level = levelMatch ? parseInt(levelMatch[1]) : item.targetLevel;
+            const cost = { technologyId: item.technologyId, level };
+            BUILD_RESOURCES.forEach(r => {
+                const li = costs.querySelector(`li.resource.${r}[data-value]`);
+                cost[r] = li ? parseInt(li.dataset.value) || 0 : 0;
+            });
+            console.log(`[Build] Coût ${item.name} niv. ${level}:`, cost);
+            return level === item.targetLevel ? cost : null;
+        } catch (e) {
+            console.log('[Build] Coût introuvable:', e.message);
+            return null;
+        } finally {
+            if (!alreadyOpen) {
+                document.querySelector('#technologydetails .close')?.click();
+            }
+        }
+    }
+
+    // { missing: {metal, crystal, deuterium}, readyAt (ms, null si jamais), storageBlocked }
+    function estimateBuildReady(cost, now = Date.now()) {
+        const resources = getPageResources();
+        if (!cost || !resources) return null;
+
+        const missing = {};
+        let readyAt = now;
+        let storageBlocked = null;
+        for (const r of BUILD_RESOURCES) {
+            const need = cost[r] || 0;
+            const have = getResourceAmountAt(r, now);
+            const lack = Math.max(0, need - have);
+            missing[r] = Math.ceil(lack);
+            if (lack <= 0) continue;
+            if (need > resources[r].storage) {
+                storageBlocked = `hangar de ${RESOURCE_LABELS[r]} trop petit`;
+                readyAt = null;
+            } else if (resources[r].production <= 0) {
+                readyAt = null;
+            } else if (readyAt !== null) {
+                readyAt = Math.max(readyAt, now + lack / resources[r].production * 1000);
+            }
+        }
+        return { missing, readyAt, storageBlocked };
+    }
+
+    function formatMissing(missing) {
+        const parts = BUILD_RESOURCES
+            .filter(r => missing[r] > 0)
+            .map(r => `${missing[r].toLocaleString('fr-FR')} ${RESOURCE_LABELS[r]}`);
+        return parts.join(' · ');
+    }
+
+    function formatClock(time) {
+        const d = new Date(time);
+        const sameDay = d.toDateString() === new Date().toDateString();
+        const hm = `${d.getHours()}h${d.getMinutes().toString().padStart(2, '0')}`;
+        return sameDay ? hm : `${d.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} ${hm}`;
+    }
+
+    // À chaque chargement d'une page de la planète : nouvelle estimation avec les ressources réelles
+    // (arrivée de flotte, nouvelle production…). Si c'est prêt, la vérification est avancée.
+    function refreshBuildEstimateHere() {
+        const planetId = getCurrentPlanetId();
+        const queues = loadBuildQueues();
+        const queue = queues[planetId];
+        if (!queue || queue.items.length === 0 || !isCostForItem(queue.cost, queue.items[0])) return;
+
+        const estimate = estimateBuildReady(queue.cost);
+        if (!estimate || estimate.storageBlocked) return;
+        queue.readyAt = estimate.readyAt;
+        if (estimate.readyAt && estimate.readyAt + 5000 < (queue.nextCheckAt || 0)) {
+            console.log(`[Build] Ressources prêtes plus tôt que prévu (${formatClock(estimate.readyAt)}), vérification avancée`);
+            queue.nextCheckAt = Math.max(Date.now(), estimate.readyAt + 5000);
+        }
+        saveBuildQueues(queues);
+    }
+
     async function upgradeBuilding(tile, technologyId) {
         // OGame ouvre le détail au clic sur l'icône (délégué sur `.technology.hasDetails:not(.showsDetails) .icon`)
         const selector = `#technologydetails button.upgrade[data-technology="${technologyId}"]`;
@@ -3591,6 +3738,7 @@
             // Fin déjà passée : OGame finalise la construction, on revient dans quelques secondes
             queue.status = constructionEnd > Date.now() ? 'Construction en cours' : 'Construction en cours de finalisation';
             queue.nextCheckAt = Math.max(constructionEnd, Date.now()) + 5000;
+            queue.readyAt = null;
             saveBuildQueues(queues);
             console.log(`[Build] Construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
             renderBuildQueueUI();
@@ -3639,6 +3787,25 @@
         const reason = getTileReason(tile);
         queue.status = reason || (tile.dataset.status === 'off' ? 'Prérequis manquants' : 'Ressources insuffisantes');
         queue.nextCheckAt = recheckAt;
+
+        // Manque de ressources : coût exact (lu une fois dans le détail OGame) + production → heure estimée
+        if (tile.dataset.status === 'disabled') {
+            if (!isCostForItem(queue.cost, item)) {
+                queue.cost = await readBuildingCost(tile, item);
+            }
+            const estimate = estimateBuildReady(queue.cost);
+            if (estimate) {
+                queue.readyAt = estimate.readyAt;
+                if (estimate.storageBlocked) {
+                    queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
+                } else if (estimate.readyAt) {
+                    // Les ressources sont là mais OGame refuse encore : on garde le motif OGame et la revérification normale
+                    queue.nextCheckAt = estimate.readyAt > Date.now()
+                        ? estimate.readyAt + 5000
+                        : recheckAt;
+                }
+            }
+        }
         saveBuildQueues(queues);
         console.log(`[Build] ${item.name} niv. ${item.targetLevel} non disponible (${tile.dataset.status}): ${queue.status}`);
         renderBuildQueueUI();
@@ -3807,6 +3974,11 @@
                 font-size: 10px;
                 margin-bottom: 6px;
             }
+            #ogame-plugin-buildqueue .bq-estimate {
+                color: #9fd6c3;
+                font-size: 10px;
+                margin: -3px 0 6px;
+            }
             #ogame-plugin-buildqueue .bq-item {
                 display: flex;
                 align-items: center;
@@ -3910,17 +4082,37 @@
             document.body.appendChild(panel);
         }
 
+        // Partie statique (reconstruite seulement si elle change) ; les textes qui bougent
+        // chaque seconde sont mis à jour à part pour ne pas casser les clics sur ▲ / ✕
         let html = '';
+        let nextText = '';
+        let estimateText = '';
         if (queue && queue.items.length > 0) {
             html += `<div class="bq-title">🏗️ File de construction (${queue.items.length})</div>`;
-            const next = queue.nextCheckAt && queue.nextCheckAt > Date.now()
-                ? ` · vérif. dans ${formatDelay(queue.nextCheckAt - Date.now())}`
-                : '';
+            if (queue.nextCheckAt && queue.nextCheckAt > Date.now()) {
+                nextText = ` · vérif. dans ${formatDelay(queue.nextCheckAt - Date.now())}`;
+            }
             if (!CONFIG.buildQueue.enabled) {
                 html += `<div class="bq-status">⏸️ Lancement automatique désactivé</div>`;
-            } else if (queue.status || next) {
-                html += `<div class="bq-status">${queue.status || ''}${next}</div>`;
+            } else {
+                html += `<div class="bq-status">${queue.status || ''}<span class="bq-next"></span></div>`;
             }
+
+            const estimate = isCostForItem(queue.cost, queue.items[0]) ? estimateBuildReady(queue.cost) : null;
+            if (estimate) {
+                const missingText = formatMissing(estimate.missing);
+                if (!missingText) {
+                    estimateText = '✅ Ressources disponibles';
+                } else if (estimate.storageBlocked) {
+                    estimateText = `Manque : ${missingText} · ${estimate.storageBlocked}`;
+                } else if (estimate.readyAt) {
+                    estimateText = `Manque : ${missingText} · prêt vers ${formatClock(estimate.readyAt)} (dans ${formatDelay(estimate.readyAt - Date.now())})`;
+                } else {
+                    estimateText = `Manque : ${missingText} · production nulle`;
+                }
+                html += `<div class="bq-estimate"></div>`;
+            }
+
             queue.items.forEach((item, index) => {
                 html += `
                     <div class="bq-item ${index === 0 ? 'first' : ''}">
@@ -3940,6 +4132,10 @@
             panel.dataset.html = html;
             panel.innerHTML = html;
         }
+        const nextEl = panel.querySelector('.bq-next');
+        if (nextEl) nextEl.textContent = nextText;
+        const estimateEl = panel.querySelector('.bq-estimate');
+        if (estimateEl) estimateEl.textContent = estimateText;
     }
 
     function renderBuildQueueUI() {
@@ -3966,7 +4162,7 @@
                 <div class="body-expedition-row">
                     <div class="body-info">
                         <span class="body-name">${formatBodyLabel(q)}</span>
-                        <span class="body-coords">${q.items.length} élément(s) · prochain : ${next.name} niv. ${next.targetLevel}${q.status ? ` · ${q.status}` : ''}</span>
+                        <span class="body-coords">${q.items.length} élément(s) · prochain : ${next.name} niv. ${next.targetLevel}${q.status ? ` · ${q.status}` : ''}${q.readyAt && isCostForItem(q.cost, next) ? ` · prêt vers ${formatClock(q.readyAt)}` : ''}</span>
                     </div>
                     <button class="refresh-btn" data-clear-queue="${id}" title="Vider la file">🗑️</button>
                 </div>
@@ -4263,6 +4459,7 @@
 
             checkAlerts();
             checkExpeditions();
+            refreshBuildEstimateHere();
             await checkBuildQueues(true);
             scheduleNextBuildCheck();
             startExpeditionChecker();

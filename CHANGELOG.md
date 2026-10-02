@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.10.0
+
+- File de construction : affichage des **ressources manquantes** et de l'**heure estimée** pour le prochain bâtiment (« Manque : 708 métal · prêt vers 16h38 (dans 6:34) »), mis à jour chaque seconde.
+- Coût exact lu une fois dans le détail OGame (bonus compris), production/s et stockage lus dans les données de la page.
+- La vérification est programmée à l'heure estimée au lieu de recharger toutes les X secondes ; l'intervalle de revérification ne sert plus qu'en l'absence d'estimation.
+- À chaque chargement d'une page de la planète, l'estimation est recalculée (arrivée de flotte, nouvelle production) et la vérification avancée si les ressources sont prêtes plus tôt.
+- Détection d'un hangar trop petit pour le coût demandé.
+- Panneau de file : les textes qui défilent sont mis à jour sans reconstruire le panneau (les clics ▲ / ✕ ne sont plus perdus).
+
 ## 1.9.3
 
 - Correction file de construction : un cadre « Bâtiment » vide était pris pour une construction en cours (OGame y laisse la classe `construction active`). La construction en cours est désormais détectée uniquement par son compte à rebours.
