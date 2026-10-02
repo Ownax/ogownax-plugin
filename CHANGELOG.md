@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.3
+
+- Correction file de construction : un cadre « Bâtiment » vide était pris pour une construction en cours (OGame y laisse la classe `construction active`). La construction en cours est désormais détectée uniquement par son compte à rebours.
+
 ## 1.9.2
 
 - Correction du lancement de construction (vérifié en jeu) : le détail du bâtiment s'ouvre en cliquant sur l'icône de la tuile, et seul le bouton « Développer » du bon bâtiment est utilisé.

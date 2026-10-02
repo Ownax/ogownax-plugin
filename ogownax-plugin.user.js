@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.9.2
+// @version      1.9.3
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3448,12 +3448,11 @@
     function getConstructionEnd() {
         const box = document.querySelector('#productionboxbuildingcomponent');
         if (!box) return null;
-        if (!box.querySelector('table.construction.active')) return 0;
+        // Même vide (« Aucun bâtiment en construction »), le cadre garde table.construction.active :
+        // seul le compte à rebours indique une construction réelle
         const countdown = box.querySelector('time.buildingCountdown[data-end], [data-end]');
-        if (countdown) {
-            return serverSecondsToLocalMs(parseInt(countdown.dataset.end));
-        }
-        return Date.now() + 60 * 1000;
+        if (!countdown) return 0;
+        return serverSecondsToLocalMs(parseInt(countdown.dataset.end));
     }
 
     function addToBuildQueue(tile) {
