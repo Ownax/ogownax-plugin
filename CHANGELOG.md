@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.7.1
+
+- Suppression de la popup de confirmation à la désactivation du plugin.
+- « Tester le webhook » sans URL : message sur le bouton au lieu d'une popup.
+
 ## 1.7.0
 
 - Bouton « ✅ Activé / ⛔ Désactivé » en haut à droite pour couper complètement le plugin (mémorisé dans Tampermonkey, commun à tous les univers du navigateur).

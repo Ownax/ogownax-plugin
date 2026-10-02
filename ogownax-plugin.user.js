@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.7.0
+// @version      1.7.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -153,10 +153,6 @@
 
     async function setPluginEnabled(enabled) {
         if (!enabled) {
-            if (!confirm('Désactiver complètement OgOwnax Plugin ?\n\nPlus aucune alerte, expédition, panic ni repli ne sera exécuté.\nLes actions en cours seront annulées.')) {
-                return;
-            }
-
             cancelScheduledPanic();
             Object.keys(scheduledFleeTimeouts).forEach(key => clearTimeout(scheduledFleeTimeouts[key]));
             scheduledFleeTimeouts = {};
@@ -2821,7 +2817,8 @@
             const btn = document.getElementById('cfg-test-webhook');
             const url = document.getElementById('cfg-webhook').value.trim();
             if (!url) {
-                alert('Saisissez d\'abord une URL de webhook.');
+                btn.textContent = '⚠️ Saisissez d\'abord une URL';
+                setTimeout(() => { btn.textContent = '📨 Tester le webhook'; }, 3000);
                 return;
             }
             const previous = CONFIG.discordWebhook;
