@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.10.2
+
+- File de construction : prise en compte de l'énergie requise (ex. Terraformeur). Si le bilan énergétique est insuffisant, le panneau indique l'énergie manquante et « Énergie insuffisante » au lieu de « Ressources disponibles » (aucune heure estimée : il faut augmenter la production d'énergie).
+
 ## 1.10.1
 
 - File de construction multi-planètes : la file d'une planète/lune qui n'existe plus (abandonnée, détruite) est supprimée avec une notification, au lieu de tenter d'y naviguer indéfiniment.

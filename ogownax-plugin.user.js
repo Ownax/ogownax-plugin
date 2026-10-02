@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.10.1
+// @version      1.10.2
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3545,7 +3545,7 @@
     }
 
     const BUILD_RESOURCES = ['metal', 'crystal', 'deuterium'];
-    const RESOURCE_LABELS = { metal: 'métal', crystal: 'cristal', deuterium: 'deutérium' };
+    const RESOURCE_LABELS = { metal: 'métal', crystal: 'cristal', deuterium: 'deutérium', energy: 'énergie' };
     const PAGE_LOADED_AT = Date.now();
     let pageResourcesCache;
 
@@ -3574,7 +3574,10 @@
             else if (c === '}' && --depth === 0) {
                 try {
                     const resources = JSON.parse(script.slice(start, i + 1)).resources;
-                    pageResourcesCache = {};
+                    pageResourcesCache = {
+                        // Bilan énergétique disponible (ne s'accumule pas avec le temps)
+                        energy: { amount: Number(resources.energy?.amount) || 0 },
+                    };
                     BUILD_RESOURCES.forEach(r => {
                         const res = resources[r] || {};
                         pageResourcesCache[r] = {
@@ -3617,7 +3620,7 @@
             const levelMatch = (costs.querySelector('p')?.textContent || '').match(/(\d+)\s*:?\s*$/);
             const level = levelMatch ? parseInt(levelMatch[1]) : item.targetLevel;
             const cost = { technologyId: item.technologyId, level };
-            BUILD_RESOURCES.forEach(r => {
+            [...BUILD_RESOURCES, 'energy'].forEach(r => {
                 const li = costs.querySelector(`li.resource.${r}[data-value]`);
                 cost[r] = li ? parseInt(li.dataset.value) || 0 : 0;
             });
@@ -3656,11 +3659,22 @@
                 readyAt = Math.max(readyAt, now + lack / resources[r].production * 1000);
             }
         }
-        return { missing, readyAt, storageBlocked };
+
+        // Énergie requise (ex. Terraformeur) : il faut construire une centrale, attendre ne suffit pas
+        let energyBlocked = false;
+        if (cost.energy > 0) {
+            const lackEnergy = cost.energy - (resources.energy?.amount || 0);
+            missing.energy = Math.max(0, Math.ceil(lackEnergy));
+            if (lackEnergy > 0) {
+                energyBlocked = true;
+                readyAt = null;
+            }
+        }
+        return { missing, readyAt, storageBlocked, energyBlocked };
     }
 
     function formatMissing(missing) {
-        const parts = BUILD_RESOURCES
+        const parts = [...BUILD_RESOURCES, 'energy']
             .filter(r => missing[r] > 0)
             .map(r => `${missing[r].toLocaleString('fr-FR')} ${RESOURCE_LABELS[r]}`);
         return parts.join(' · ');
@@ -3798,6 +3812,8 @@
                 queue.readyAt = estimate.readyAt;
                 if (estimate.storageBlocked) {
                     queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
+                } else if (estimate.energyBlocked) {
+                    queue.status = 'Énergie insuffisante';
                 } else if (estimate.readyAt) {
                     // Les ressources sont là mais OGame refuse encore : on garde le motif OGame et la revérification normale
                     queue.nextCheckAt = estimate.readyAt > Date.now()
@@ -4120,6 +4136,8 @@
                     estimateText = '✅ Ressources disponibles';
                 } else if (estimate.storageBlocked) {
                     estimateText = `Manque : ${missingText} · ${estimate.storageBlocked}`;
+                } else if (estimate.energyBlocked) {
+                    estimateText = `Manque : ${missingText} · production d'énergie à augmenter`;
                 } else if (estimate.readyAt) {
                     estimateText = `Manque : ${missingText} · prêt vers ${formatClock(estimate.readyAt)} (dans ${formatDelay(estimate.readyAt - Date.now())})`;
                 } else {
