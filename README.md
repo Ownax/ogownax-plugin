@@ -8,7 +8,7 @@ Script Tampermonkey pour OGame : alertes Discord (attaque / espionnage), lanceme
 2. Chrome / Edge uniquement : activer le « Mode développeur » dans `chrome://extensions` (ou « Autoriser les scripts utilisateur » dans les détails de Tampermonkey), sinon les userscripts ne s'exécutent pas.
 3. Ouvrir ce lien et cliquer **Installer** :
 
-   **https://raw.githubusercontent.com/OWNER/ogownax-plugin/main/ogownax-plugin.user.js**
+   **https://raw.githubusercontent.com/Ownax/ogownax-plugin/main/ogownax-plugin.user.js**
 
 4. Si une ancienne version (installée par copier-coller) existe, la supprimer dans le tableau de bord Tampermonkey pour éviter un doublon.
 

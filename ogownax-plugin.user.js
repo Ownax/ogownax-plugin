@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
-// @namespace    https://github.com/OWNER/ogownax-plugin
+// @namespace    https://github.com/Ownax/ogownax-plugin
 // @version      1.6.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
@@ -12,9 +12,9 @@
 // @connect      discord.com
 // @connect      discordapp.com
 // @run-at       document-idle
-// @homepageURL  https://github.com/OWNER/ogownax-plugin
-// @updateURL    https://raw.githubusercontent.com/OWNER/ogownax-plugin/main/ogownax-plugin.user.js
-// @downloadURL  https://raw.githubusercontent.com/OWNER/ogownax-plugin/main/ogownax-plugin.user.js
+// @homepageURL  https://github.com/Ownax/ogownax-plugin
+// @updateURL    https://raw.githubusercontent.com/Ownax/ogownax-plugin/main/ogownax-plugin.user.js
+// @downloadURL  https://raw.githubusercontent.com/Ownax/ogownax-plugin/main/ogownax-plugin.user.js
 // ==/UserScript==
 
 (function() {
