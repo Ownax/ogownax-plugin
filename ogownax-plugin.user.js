@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.13.1
+// @version      1.14.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -90,7 +90,17 @@
             title: '🧬 File formes de vie',
             isTechnology: id => id > 10000,
         },
+        // Une seule recherche à la fois pour tout le compte ; elle est payée par la planète qui la lance
+        research: {
+            pages: ['research'],
+            box: '#productionboxresearchcomponent',
+            title: '🔬 File de recherche',
+            isTechnology: id => id >= 100 && id < 200,
+            accountWide: true,
+        },
     };
+    const RESEARCH_LAB_ID = 31;
+    const ACCOUNT_INFO_KEY = '__account';
     const BUILDING_PAGES = Object.values(BUILD_LANES).flatMap(lane => lane.pages);
     // Pendant l'amélioration de ces usines, OGame bloque les bâtiments de formes de vie (et inversement)
     const LIFEFORM_BLOCKING_BUILDINGS = { 14: 'Usine de robots', 15: 'Usine de nanites' };
@@ -3555,9 +3565,11 @@
     }
 
     // Clé de stockage d'une file : l'id de la planète pour les bâtiments (compatible avec les files existantes),
-    // « id|lf » pour les formes de vie
+    // « id|lf » pour les formes de vie, « id|rs » pour la recherche
+    const LANE_KEY_SUFFIX = { lifeform: '|lf', research: '|rs' };
+
     function getQueueKey(planetId, lane) {
-        return lane === 'lifeform' ? `${planetId}|lf` : String(planetId);
+        return `${planetId}${LANE_KEY_SUFFIX[lane] || ''}`;
     }
 
     function getQueuePlanetId(key) {
@@ -3565,7 +3577,14 @@
     }
 
     function getQueueLane(key) {
-        return String(key).endsWith('|lf') ? 'lifeform' : 'building';
+        const suffix = '|' + (String(key).split('|')[1] || '');
+        return Object.keys(LANE_KEY_SUFFIX).find(lane => LANE_KEY_SUFFIX[lane] === suffix) || 'building';
+    }
+
+    const LANE_ICONS = { building: '🏗️', lifeform: '🧬', research: '🔬' };
+
+    function getLaneLabel(lane) {
+        return { building: 'File de construction', lifeform: 'File formes de vie', research: 'File de recherche' }[lane];
     }
 
     function getBuildingTiles() {
@@ -3603,11 +3622,17 @@
                 const activeTile = document.querySelector('#technologies li.technology[data-status="active"]');
                 technologyId = match ? parseInt(match[1]) : (activeTile && getLaneOfComponent(getCurrentPage()) === lane ? parseInt(activeTile.dataset.technology) : null);
             }
-            planetInfo[lane] = {
+            const entry = {
                 technologyId,
                 end: countdown ? serverSecondsToLocalMs(parseInt(countdown.dataset.end)) : 0,
                 seenAt: Date.now(),
             };
+            // La recherche en cours vaut pour tout le compte, quelle que soit la planète affichée
+            if (BUILD_LANES[lane].accountWide) {
+                info[ACCOUNT_INFO_KEY] = { ...(info[ACCOUNT_INFO_KEY] || {}), [lane]: entry };
+            } else {
+                planetInfo[lane] = entry;
+            }
             changed = true;
         });
         if (changed) {
@@ -3616,18 +3641,35 @@
         }
     }
 
-    // Contrainte entre les deux files : { reason, until } ou null
+    // Contraintes entre files : { reason, until } ou null
+    // - usine de robots/nanites ↔ formes de vie (même planète)
+    // - laboratoire de recherche (planète) ↔ recherche (compte)
     function getLaneBlocker(planetId, lane, item, now = Date.now()) {
-        const info = loadConstructionInfo()[planetId] || {};
+        const allInfo = loadConstructionInfo();
+        const info = allInfo[planetId] || {};
+        const research = (allInfo[ACCOUNT_INFO_KEY] || {}).research;
+        const b = info.building;
+
         if (lane === 'lifeform') {
-            const b = info.building;
             if (b && b.end > now && LIFEFORM_BLOCKING_BUILDINGS[b.technologyId]) {
                 return { reason: `${LIFEFORM_BLOCKING_BUILDINGS[b.technologyId]} en construction`, until: b.end };
             }
-        } else if (item && LIFEFORM_BLOCKING_BUILDINGS[item.technologyId]) {
-            const l = info.lifeform;
-            if (l && l.end > now) {
-                return { reason: 'Bâtiment de forme de vie en construction', until: l.end };
+        } else if (lane === 'research') {
+            if (research && research.end > now) {
+                return { reason: 'Recherche en cours', until: research.end };
+            }
+            if (b && b.end > now && b.technologyId === RESEARCH_LAB_ID) {
+                return { reason: 'Laboratoire de recherche en extension', until: b.end };
+            }
+        } else if (item) {
+            if (LIFEFORM_BLOCKING_BUILDINGS[item.technologyId]) {
+                const l = info.lifeform;
+                if (l && l.end > now) {
+                    return { reason: 'Bâtiment de forme de vie en construction', until: l.end };
+                }
+            }
+            if (item.technologyId === RESEARCH_LAB_ID && research && research.end > now) {
+                return { reason: 'Recherche en cours', until: research.end };
             }
         }
         return null;
@@ -4074,7 +4116,7 @@
     async function evaluateBuildQueueHere(key) {
         const planetId = getQueuePlanetId(key);
         const lane = getQueueLane(key);
-        const laneLabel = lane === 'lifeform' ? 'File formes de vie' : 'File de construction';
+        const laneLabel = getLaneLabel(lane);
         const body = getCurrentBody();
         const component = getCurrentPage();
         if (body.id !== planetId || getLaneOfComponent(component) !== lane) return null;
@@ -4107,7 +4149,8 @@
         const constructionEnd = getConstructionEnd(lane);
         if (constructionEnd) {
             // Fin déjà passée : OGame finalise la construction, on revient dans quelques secondes
-            queue.status = constructionEnd > Date.now() ? 'Construction en cours' : 'Construction en cours de finalisation';
+            const busyLabel = lane === 'research' ? 'Recherche en cours' : 'Construction en cours';
+            queue.status = constructionEnd > Date.now() ? busyLabel : `${busyLabel} de finalisation`;
             queue.nextCheckAt = Math.max(constructionEnd, Date.now()) + 5000;
             queue.busyUntil = constructionEnd;
             queue.readyAt = null;
@@ -4159,8 +4202,8 @@
                 queue.awaitingResources = false;
                 saveBuildQueues(queues);
                 await upgradeBuilding(tile, item.technologyId);
-                const icon = lane === 'lifeform' ? '🧬' : '🏗️';
-                notifyDiscord(`${icon} **Construction lancée** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
+                const icon = LANE_ICONS[lane];
+                notifyDiscord(`${icon} **${lane === 'research' ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
             } catch (e) {
                 buildLog('Échec du lancement:', e);
                 const current = loadBuildQueues();
@@ -4452,9 +4495,7 @@
                 const addBtn = document.createElement('span');
                 addBtn.className = 'ogp-queue-add';
                 addBtn.textContent = '+';
-                addBtn.title = lane === 'lifeform'
-                    ? 'Ajouter un niveau à la file formes de vie'
-                    : 'Ajouter un niveau à la file de construction';
+                addBtn.title = `Ajouter un niveau à la ${getLaneLabel(lane).toLowerCase()}`;
                 ['mousedown', 'mouseup'].forEach(type => addBtn.addEventListener(type, e => e.stopPropagation()));
                 addBtn.addEventListener('click', (e) => {
                     e.preventDefault();
@@ -4590,14 +4631,14 @@
         const queues = loadBuildQueues();
         const keys = Object.keys(queues).filter(key => queues[key].items.length > 0);
         if (keys.length === 0) {
-            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les bâtiments (pages Ressources, Installations et Formes de vie).</div>';
+            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les pages Ressources, Installations, Formes de vie et Recherche.</div>';
             return;
         }
 
         container.innerHTML = keys.map(key => {
             const q = queues[key];
             const next = q.items[0];
-            const laneIcon = getQueueLane(key) === 'lifeform' ? '🧬' : '🏗️';
+            const laneIcon = LANE_ICONS[getQueueLane(key)];
             return `
                 <div class="body-expedition-row">
                     <div class="body-info">

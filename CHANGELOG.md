@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.14.0
+
+- **File « 🔬 Recherche »** : bouton « + » sur la page Recherche, file par planète (ce sont les ressources de cette planète qui paient), même fonctionnement que les bâtiments (lancement auto, ressources manquantes, heure estimée, notification « Recherche lancée »).
+- La recherche en cours est mémorisée **pour tout le compte** (une seule recherche à la fois) : toutes les files de recherche attendent sa fin, sans navigation.
+- **Contrainte Laboratoire ↔ Recherche**, dans les deux sens : la recherche attend la fin de l'extension du Laboratoire de sa planète ; un Laboratoire en tête de la file bâtiments attend la fin de la recherche en cours. Si la fin n'est pas connue, le message OGame (« Laboratoire de recherche est en cours d'extension ») est affiché.
+
 ## 1.13.1
 
 - Correction : un bâtiment lancé restait dans la file. Le rechargement des ressources qui suit la dépense recalculait l'estimation du bâtiment lancé et repoussait d'une heure le contrôle post-lancement. Le coût mémorisé est désormais effacé au lancement.
