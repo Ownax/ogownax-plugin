@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.7.1
+// @version      1.8.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -59,6 +59,10 @@
             speed: 10,
             delayBeforeImpact: 30,
             destinations: {}
+        },
+        buildQueue: {
+            enabled: true,
+            recheckInterval: 5 * 60,
         }
     };
 
@@ -67,6 +71,9 @@
     const FLEE_STATE_KEY = 'ogame_plugin_flee_state';
     const SCHEDULED_FLEE_KEY = 'ogame_plugin_scheduled_flee';
     const PROCESSED_ATTACKS_KEY = 'ogame_plugin_processed_attacks';
+    const BUILD_QUEUE_KEY = 'ogame_plugin_build_queue';
+    const BUILD_STATE_KEY = 'ogame_plugin_build_state';
+    const BUILDING_PAGES = ['supplies', 'facilities'];
 
     let scheduledPanicTimeout = null;
     let scheduledPanicTargetTime = null;
@@ -96,6 +103,7 @@
                     cooldowns: { ...DEFAULT_CONFIG.cooldowns, ...parsed.cooldowns },
                     panic: { ...DEFAULT_CONFIG.panic, ...parsed.panic },
                     fleeConfig: { ...DEFAULT_CONFIG.fleeConfig, ...parsed.fleeConfig },
+                    buildQueue: { ...DEFAULT_CONFIG.buildQueue, ...parsed.buildQueue },
                 };
                 if (parsed.expeditionsPerPlanet && !parsed.expeditionsPerBody) {
                     config.expeditionsPerBody = {};
@@ -161,6 +169,7 @@
             saveFleeState({});
             saveScheduledFlee({});
             saveProcessedAttacks({});
+            clearBuildState();
         }
 
         GM_setValue(ENABLED_STORAGE_KEY, enabled);
@@ -2669,6 +2678,23 @@
                 </div>
             </div>
 
+            <div class="section-title">🏗️ File de construction</div>
+
+            <div class="config-group">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="cfg-buildqueue-enabled">
+                    Lancement automatique des constructions
+                </label>
+                <div class="hint">Lance le prochain bâtiment de la file dès que la planète est libre et que les ressources sont disponibles</div>
+            </div>
+
+            <div class="config-group">
+                <label>Revérification si ressources insuffisantes (en secondes)</label>
+                <input type="number" id="cfg-buildqueue-recheck" min="60" max="3600" style="width: 80px;">
+            </div>
+
+            <div id="cfg-buildqueue-container"></div>
+
             <div class="section-title">🔔 Alertes</div>
 
             <div class="config-group">
@@ -3162,9 +3188,13 @@
         document.getElementById('cfg-flee-speed').value = CONFIG.fleeConfig.speed || 10;
         document.getElementById('cfg-flee-delay').value = CONFIG.fleeConfig.delayBeforeImpact || 30;
 
+        document.getElementById('cfg-buildqueue-enabled').checked = CONFIG.buildQueue.enabled;
+        document.getElementById('cfg-buildqueue-recheck').value = CONFIG.buildQueue.recheckInterval;
+
         renderPanicSelects();
         renderExpeditionsConfig();
         renderFleeDestinations();
+        renderBuildQueueConfig();
     }
 
     function saveFormValues() {
@@ -3252,15 +3282,623 @@
                 speed: parseInt(document.getElementById('cfg-flee-speed').value) || 10,
                 delayBeforeImpact: parseInt(document.getElementById('cfg-flee-delay').value) || 30,
                 destinations: fleeDestinations
+            },
+            buildQueue: {
+                enabled: document.getElementById('cfg-buildqueue-enabled').checked,
+                recheckInterval: Math.max(60, parseInt(document.getElementById('cfg-buildqueue-recheck').value) || 300),
             }
         };
 
         saveConfig(CONFIG);
+        renderBuildQueuePanel();
         updateWebhookIndicator();
         alert('Configuration sauvegardée !');
         document.getElementById('ogame-plugin-panel').style.display = 'none';
         const { discordWebhook, ...loggable } = CONFIG;
         console.log('[Monitor] Configuration mise à jour:', loggable);
+    }
+
+    // ===== File de construction (par planète/lune) =====
+
+    const SERVER_OFFSET_MS = (() => {
+        const meta = document.querySelector('meta[name="ogame-timestamp"]');
+        return meta ? parseInt(meta.getAttribute('content')) * 1000 - Date.now() : 0;
+    })();
+
+    function serverSecondsToLocalMs(seconds) {
+        return seconds * 1000 - SERVER_OFFSET_MS;
+    }
+
+    function loadBuildQueues() {
+        try {
+            return JSON.parse(localStorage.getItem(BUILD_QUEUE_KEY)) || {};
+        } catch (e) {
+            return {};
+        }
+    }
+
+    function saveBuildQueues(queues) {
+        localStorage.setItem(BUILD_QUEUE_KEY, JSON.stringify(queues));
+    }
+
+    function loadBuildState() {
+        try {
+            return JSON.parse(localStorage.getItem(BUILD_STATE_KEY));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function saveBuildState(state) {
+        localStorage.setItem(BUILD_STATE_KEY, JSON.stringify(state));
+    }
+
+    function clearBuildState() {
+        localStorage.removeItem(BUILD_STATE_KEY);
+    }
+
+    function isActionInProgress() {
+        const launchState = loadLaunchState();
+        const panicState = loadPanicState();
+        const fleeState = loadFleeState();
+        const buildState = loadBuildState();
+        const hasActiveFlee = Object.values(fleeState).some(s => s && s.active);
+        return !!((launchState && launchState.active) || (panicState && panicState.active) || hasActiveFlee || (buildState && buildState.active));
+    }
+
+    function getCurrentBody() {
+        const nameMeta = document.querySelector('meta[name="ogame-planet-name"]');
+        return {
+            id: getCurrentPlanetId(),
+            type: getCurrentPlanetType(),
+            coords: getCurrentPlanetCoords(),
+            name: nameMeta ? nameMeta.getAttribute('content') : '',
+        };
+    }
+
+    function getBuildingTiles() {
+        // Les satellites solaires (212) et foreuses (217) sont des unités, pas des bâtiments
+        return [...document.querySelectorAll('#technologies li.technology[data-technology]')]
+            .filter(tile => parseInt(tile.dataset.technology) < 200);
+    }
+
+    function getBuildingTile(technologyId) {
+        return document.querySelector(`#technologies li.technology[data-technology="${technologyId}"]`);
+    }
+
+    // Niveau atteint une fois la construction en cours terminée
+    function getTileReachedLevel(tile) {
+        const target = tile.querySelector('.targetlevel');
+        if (tile.dataset.status === 'active' && target) {
+            return parseInt(target.dataset.value) || 0;
+        }
+        const level = tile.querySelector('.level');
+        return level ? parseInt(level.dataset.value) || 0 : 0;
+    }
+
+    function getTileReason(tile) {
+        const title = tile.getAttribute('title') || tile.dataset.title || '';
+        const parts = title.split(/<br\s*\/?>/i);
+        return parts.length > 1 ? parts.slice(1).join(' ').replace(/<[^>]+>/g, '').trim() : '';
+    }
+
+    // Fin (heure locale, ms) de la construction de bâtiment en cours sur la planète affichée
+    function getConstructionEnd() {
+        const box = document.querySelector('#productionboxbuildingcomponent');
+        if (!box) return null;
+        if (!box.querySelector('table.construction.active')) return 0;
+        const countdown = box.querySelector('time.buildingCountdown[data-end], [data-end]');
+        if (countdown) {
+            return serverSecondsToLocalMs(parseInt(countdown.dataset.end));
+        }
+        return Date.now() + 60 * 1000;
+    }
+
+    function addToBuildQueue(tile) {
+        const body = getCurrentBody();
+        const component = getCurrentPage();
+        if (!body.id || !BUILDING_PAGES.includes(component)) return;
+
+        const technologyId = parseInt(tile.dataset.technology);
+        const queues = loadBuildQueues();
+        const queue = queues[body.id] || { items: [] };
+        queue.type = body.type;
+        queue.coords = body.coords;
+        queue.name = body.name;
+
+        const planned = queue.items.filter(i => i.technologyId === technologyId).map(i => i.targetLevel);
+        const targetLevel = Math.max(getTileReachedLevel(tile), ...planned) + 1;
+
+        queue.items.push({
+            technologyId,
+            name: tile.getAttribute('aria-label') || `Bâtiment ${technologyId}`,
+            targetLevel,
+            component,
+        });
+        queue.nextCheckAt = 0;
+        queue.status = '';
+        queues[body.id] = queue;
+        saveBuildQueues(queues);
+
+        console.log(`[Build] Ajout file ${body.coords} (${body.type}): ${queue.items[queue.items.length - 1].name} niv. ${targetLevel}`);
+        renderBuildQueueUI();
+    }
+
+    function removeFromBuildQueue(planetId, index) {
+        const queues = loadBuildQueues();
+        const queue = queues[planetId];
+        if (!queue) return;
+        const [removed] = queue.items.splice(index, 1);
+        // Les niveaux suivants du même bâtiment sont décalés d'un cran
+        if (removed) {
+            queue.items.forEach(item => {
+                if (item.technologyId === removed.technologyId && item.targetLevel > removed.targetLevel) {
+                    item.targetLevel--;
+                }
+            });
+        }
+        queue.nextCheckAt = 0;
+        if (queue.items.length === 0) {
+            delete queues[planetId];
+        }
+        saveBuildQueues(queues);
+        renderBuildQueueUI();
+    }
+
+    function moveUpInBuildQueue(planetId, index) {
+        const queues = loadBuildQueues();
+        const queue = queues[planetId];
+        if (!queue || index <= 0) return;
+        const items = queue.items;
+        // Un niveau ne peut pas passer devant le niveau précédent du même bâtiment
+        if (items[index - 1].technologyId === items[index].technologyId) return;
+        [items[index - 1], items[index]] = [items[index], items[index - 1]];
+        queue.nextCheckAt = 0;
+        saveBuildQueues(queues);
+        renderBuildQueueUI();
+    }
+
+    function clearBuildQueue(planetId) {
+        const queues = loadBuildQueues();
+        delete queues[planetId];
+        saveBuildQueues(queues);
+        renderBuildQueueUI();
+    }
+
+    function getBuildPageUrl(component, planetId) {
+        return `${window.location.origin}/game/index.php?page=ingame&component=${component}&cp=${planetId}`;
+    }
+
+    function formatBodyLabel(queue) {
+        const icon = queue.type === 'moon' ? '🌙' : '🌍';
+        return `${icon} ${queue.name || ''} [${queue.coords}]`;
+    }
+
+    function formatDelay(ms) {
+        const total = Math.max(0, Math.round(ms / 1000));
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        if (h > 0) return `${h}h ${m.toString().padStart(2, '0')}m`;
+        return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    async function upgradeBuilding(tile, technologyId) {
+        tile.click();
+        const upgradeBtn = await waitForElement(
+            `#technologydetails button.upgrade[data-technology="${technologyId}"], #technologydetails button.upgrade, #technologydetails_content button.upgrade`,
+            8000
+        );
+        if (upgradeBtn.disabled) {
+            throw new Error('Bouton Améliorer désactivé');
+        }
+        await wait(300);
+        upgradeBtn.click();
+    }
+
+    // Traite la file de la planète affichée. Retourne le composant à ouvrir si la page ne convient pas.
+    async function evaluateBuildQueueHere() {
+        const body = getCurrentBody();
+        const component = getCurrentPage();
+        const queues = loadBuildQueues();
+        const queue = queues[body.id];
+        if (!queue || queue.items.length === 0) return null;
+
+        // Retire les niveaux déjà atteints (lancés par le plugin ou à la main)
+        const before = queue.items.length;
+        queue.items = queue.items.filter(item => {
+            if (item.component !== component) return true;
+            const tile = getBuildingTile(item.technologyId);
+            return !tile || getTileReachedLevel(tile) < item.targetLevel;
+        });
+        if (queue.items.length !== before) {
+            console.log(`[Build] ${before - queue.items.length} élément(s) déjà construit(s) retiré(s)`);
+        }
+
+        if (queue.items.length === 0) {
+            delete queues[body.id];
+            saveBuildQueues(queues);
+            notifyDiscord(`✅ **File de construction terminée** sur ${formatBodyLabel(queue)}`);
+            renderBuildQueueUI();
+            return null;
+        }
+
+        const constructionEnd = getConstructionEnd();
+        if (constructionEnd) {
+            queue.status = 'Construction en cours';
+            queue.nextCheckAt = constructionEnd + 5000;
+            saveBuildQueues(queues);
+            console.log(`[Build] Construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
+            renderBuildQueueUI();
+            return null;
+        }
+
+        const item = queue.items[0];
+        if (item.component !== component) {
+            saveBuildQueues(queues);
+            return item.component;
+        }
+
+        const tile = getBuildingTile(item.technologyId);
+        if (!tile) {
+            queue.items.shift();
+            saveBuildQueues(queues);
+            console.log(`[Build] ${item.name} introuvable sur ${body.coords}, retiré de la file`);
+            notifyDiscord(`⚠️ **File de construction** : ${item.name} introuvable sur ${formatBodyLabel(queue)}, retiré de la file`);
+            renderBuildQueueUI();
+            return null;
+        }
+
+        const recheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 300) * 1000;
+
+        if (tile.dataset.status === 'on') {
+            try {
+                console.log(`[Build] Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
+                queue.status = 'Lancement…';
+                queue.nextCheckAt = Date.now() + 30 * 1000;
+                saveBuildQueues(queues);
+                await upgradeBuilding(tile, item.technologyId);
+                notifyDiscord(`🏗️ **Construction lancée** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
+            } catch (e) {
+                console.log('[Build] Échec du lancement:', e);
+                const current = loadBuildQueues();
+                if (current[body.id]) {
+                    current[body.id].status = `Échec du lancement : ${e.message}`;
+                    current[body.id].nextCheckAt = recheckAt;
+                    saveBuildQueues(current);
+                }
+            }
+            renderBuildQueueUI();
+            return null;
+        }
+
+        const reason = getTileReason(tile);
+        queue.status = reason || (tile.dataset.status === 'off' ? 'Prérequis manquants' : 'Ressources insuffisantes');
+        queue.nextCheckAt = recheckAt;
+        saveBuildQueues(queues);
+        console.log(`[Build] ${item.name} niv. ${item.targetLevel} non disponible (${tile.dataset.status}): ${queue.status}`);
+        renderBuildQueueUI();
+        return null;
+    }
+
+    async function checkBuildQueues() {
+        if (!CONFIG.buildQueue.enabled) return;
+        if (isActionInProgress()) return;
+
+        const queues = loadBuildQueues();
+        const now = Date.now();
+        const currentId = getCurrentPlanetId();
+        const due = Object.keys(queues).filter(id => queues[id].items.length > 0 && (queues[id].nextCheckAt || 0) <= now);
+        if (due.length === 0) return;
+
+        // La planète affichée d'abord : pas de navigation si on est déjà sur la bonne page
+        due.sort((a, b) => (b === currentId) - (a === currentId));
+        const planetId = due[0];
+        const firstItem = queues[planetId].items[0];
+
+        if (planetId === currentId && BUILDING_PAGES.includes(getCurrentPage())) {
+            const neededComponent = await evaluateBuildQueueHere();
+            if (!neededComponent) return;
+            saveBuildState({ active: true, planetId, component: neededComponent, startedAt: Date.now(), attempts: 0 });
+            window.location.href = getBuildPageUrl(neededComponent, planetId);
+            return;
+        }
+
+        console.log(`[Build] Navigation vers ${queues[planetId].coords} (${firstItem.component}) pour la file de construction`);
+        saveBuildState({ active: true, planetId, component: firstItem.component, startedAt: Date.now(), attempts: 0 });
+        window.location.href = getBuildPageUrl(firstItem.component, planetId);
+    }
+
+    async function processBuildState() {
+        const state = loadBuildState();
+        if (!state || !state.active) return;
+
+        if (Date.now() - state.startedAt > 2 * 60 * 1000) {
+            console.log('[Build] État de navigation expiré, abandon');
+            clearBuildState();
+            return;
+        }
+
+        const onTarget = getCurrentPlanetId() === state.planetId && getCurrentPage() === state.component;
+        if (!onTarget) {
+            if (state.attempts >= 2) {
+                console.log('[Build] Impossible d\'atteindre la page cible, abandon');
+                clearBuildState();
+                const queues = loadBuildQueues();
+                if (queues[state.planetId]) {
+                    queues[state.planetId].nextCheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 300) * 1000;
+                    saveBuildQueues(queues);
+                }
+                return;
+            }
+            saveBuildState({ ...state, attempts: state.attempts + 1 });
+            window.location.href = getBuildPageUrl(state.component, state.planetId);
+            return;
+        }
+
+        clearBuildState();
+        try {
+            await waitForElement('#technologies li.technology', 5000);
+        } catch (e) {
+            console.log('[Build] Bâtiments non chargés');
+            return;
+        }
+        await wait(500);
+        const neededComponent = await evaluateBuildQueueHere();
+        if (neededComponent) {
+            saveBuildState({ active: true, planetId: state.planetId, component: neededComponent, startedAt: Date.now(), attempts: 0 });
+            window.location.href = getBuildPageUrl(neededComponent, state.planetId);
+        }
+    }
+
+    function injectBuildQueueStyle() {
+        const style = document.createElement('style');
+        style.textContent = `
+            #technologies li.technology .ogp-queue-add {
+                position: absolute;
+                top: 2px;
+                left: 2px;
+                z-index: 5;
+                width: 18px;
+                height: 18px;
+                line-height: 16px;
+                text-align: center;
+                font-size: 14px;
+                font-weight: bold;
+                color: #9fffaf;
+                background: rgba(13, 41, 21, 0.9);
+                border: 1px solid #3c6a4a;
+                border-radius: 3px;
+                cursor: pointer;
+            }
+            #technologies li.technology .ogp-queue-add:hover {
+                background: rgba(26, 74, 42, 1);
+            }
+            #technologies li.technology .ogp-queue-badge {
+                position: absolute;
+                top: 2px;
+                right: 2px;
+                z-index: 5;
+                padding: 0 4px;
+                font-size: 10px;
+                font-weight: bold;
+                color: #0d1f29;
+                background: #cfaf6f;
+                border-radius: 3px;
+                pointer-events: none;
+            }
+            #ogame-plugin-buildqueue {
+                position: fixed;
+                bottom: 10px;
+                right: 10px;
+                z-index: 10000;
+                width: 280px;
+                max-height: 50vh;
+                overflow-y: auto;
+                background: linear-gradient(180deg, #0d1f29 0%, #061015 100%);
+                border: 2px solid #3c5a6a;
+                border-radius: 8px;
+                padding: 8px 10px;
+                color: #9fc3d6;
+                font-family: Verdana, Arial, sans-serif;
+                font-size: 11px;
+            }
+            #ogame-plugin-buildqueue .bq-title {
+                color: #6fcfff;
+                font-weight: bold;
+                margin-bottom: 4px;
+            }
+            #ogame-plugin-buildqueue .bq-status {
+                color: #cfaf6f;
+                font-size: 10px;
+                margin-bottom: 6px;
+            }
+            #ogame-plugin-buildqueue .bq-item {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 3px 4px;
+                margin-bottom: 2px;
+                background: #0a1520;
+                border: 1px solid #2c4a5a;
+                border-radius: 3px;
+            }
+            #ogame-plugin-buildqueue .bq-item.first {
+                border-color: #3c6a4a;
+            }
+            #ogame-plugin-buildqueue .bq-item .bq-name {
+                flex: 1;
+            }
+            #ogame-plugin-buildqueue .bq-item button {
+                background: none;
+                border: none;
+                color: #9fc3d6;
+                cursor: pointer;
+                padding: 0 3px;
+                font-size: 11px;
+            }
+            #ogame-plugin-buildqueue .bq-others {
+                color: #6a8a9a;
+                font-size: 10px;
+                margin-top: 6px;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function renderBuildTileButtons() {
+        if (!BUILDING_PAGES.includes(getCurrentPage())) return;
+
+        const queue = loadBuildQueues()[getCurrentPlanetId()];
+        const component = getCurrentPage();
+
+        getBuildingTiles().forEach(tile => {
+            if (getComputedStyle(tile).position === 'static') {
+                tile.style.position = 'relative';
+            }
+
+            if (!tile.querySelector('.ogp-queue-add')) {
+                const addBtn = document.createElement('span');
+                addBtn.className = 'ogp-queue-add';
+                addBtn.textContent = '+';
+                addBtn.title = 'Ajouter un niveau à la file de construction';
+                ['mousedown', 'mouseup'].forEach(type => addBtn.addEventListener(type, e => e.stopPropagation()));
+                addBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    addToBuildQueue(tile);
+                });
+                tile.appendChild(addBtn);
+            }
+
+            const technologyId = parseInt(tile.dataset.technology);
+            const queued = queue ? queue.items.filter(i => i.technologyId === technologyId && i.component === component) : [];
+            let badge = tile.querySelector('.ogp-queue-badge');
+            if (queued.length > 0) {
+                if (!badge) {
+                    badge = document.createElement('span');
+                    badge.className = 'ogp-queue-badge';
+                    tile.appendChild(badge);
+                }
+                badge.textContent = `→ ${Math.max(...queued.map(i => i.targetLevel))}`;
+            } else if (badge) {
+                badge.remove();
+            }
+        });
+    }
+
+    function renderBuildQueuePanel() {
+        const queues = loadBuildQueues();
+        const currentId = getCurrentPlanetId();
+        const queue = queues[currentId];
+        const othersCount = Object.keys(queues)
+            .filter(id => id !== currentId)
+            .reduce((sum, id) => sum + queues[id].items.length, 0);
+
+        let panel = document.getElementById('ogame-plugin-buildqueue');
+        const onBuildingPage = BUILDING_PAGES.includes(getCurrentPage());
+
+        if ((!queue || queue.items.length === 0) && !(onBuildingPage && othersCount > 0)) {
+            if (panel) panel.remove();
+            return;
+        }
+
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'ogame-plugin-buildqueue';
+            panel.addEventListener('click', (e) => {
+                const btn = e.target.closest('button[data-action]');
+                if (!btn) return;
+                const index = parseInt(btn.dataset.index);
+                if (btn.dataset.action === 'remove') removeFromBuildQueue(currentId, index);
+                if (btn.dataset.action === 'up') moveUpInBuildQueue(currentId, index);
+            });
+            document.body.appendChild(panel);
+        }
+
+        let html = '';
+        if (queue && queue.items.length > 0) {
+            html += `<div class="bq-title">🏗️ File de construction (${queue.items.length})</div>`;
+            const next = queue.nextCheckAt && queue.nextCheckAt > Date.now()
+                ? ` · vérif. dans ${formatDelay(queue.nextCheckAt - Date.now())}`
+                : '';
+            if (!CONFIG.buildQueue.enabled) {
+                html += `<div class="bq-status">⏸️ Lancement automatique désactivé</div>`;
+            } else if (queue.status || next) {
+                html += `<div class="bq-status">${queue.status || ''}${next}</div>`;
+            }
+            queue.items.forEach((item, index) => {
+                html += `
+                    <div class="bq-item ${index === 0 ? 'first' : ''}">
+                        <span class="bq-name">${index + 1}. ${item.name} <b>niv. ${item.targetLevel}</b></span>
+                        ${index > 0 ? `<button data-action="up" data-index="${index}" title="Monter">▲</button>` : ''}
+                        <button data-action="remove" data-index="${index}" title="Retirer">✕</button>
+                    </div>
+                `;
+            });
+        } else {
+            html += `<div class="bq-title">🏗️ File de construction</div>`;
+        }
+        if (othersCount > 0) {
+            html += `<div class="bq-others">+ ${othersCount} élément(s) sur d'autres planètes/lunes</div>`;
+        }
+        if (panel.dataset.html !== html) {
+            panel.dataset.html = html;
+            panel.innerHTML = html;
+        }
+    }
+
+    function renderBuildQueueUI() {
+        renderBuildTileButtons();
+        renderBuildQueuePanel();
+        renderBuildQueueConfig();
+    }
+
+    function renderBuildQueueConfig() {
+        const container = document.getElementById('cfg-buildqueue-container');
+        if (!container) return;
+
+        const queues = loadBuildQueues();
+        const ids = Object.keys(queues).filter(id => queues[id].items.length > 0);
+        if (ids.length === 0) {
+            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les bâtiments (pages Ressources / Installations).</div>';
+            return;
+        }
+
+        container.innerHTML = ids.map(id => {
+            const q = queues[id];
+            const next = q.items[0];
+            return `
+                <div class="body-expedition-row">
+                    <div class="body-info">
+                        <span class="body-name">${formatBodyLabel(q)}</span>
+                        <span class="body-coords">${q.items.length} élément(s) · prochain : ${next.name} niv. ${next.targetLevel}${q.status ? ` · ${q.status}` : ''}</span>
+                    </div>
+                    <button class="refresh-btn" data-clear-queue="${id}" title="Vider la file">🗑️</button>
+                </div>
+            `;
+        }).join('');
+
+        container.querySelectorAll('[data-clear-queue]').forEach(btn => {
+            btn.addEventListener('click', () => clearBuildQueue(btn.dataset.clearQueue));
+        });
+    }
+
+    function initBuildQueueUI() {
+        injectBuildQueueStyle();
+        renderBuildQueueUI();
+
+        // OGame recharge certaines zones en AJAX : on réinjecte les boutons si besoin
+        const technologies = document.getElementById('technologies');
+        if (technologies) {
+            new MutationObserver(() => {
+                if (getBuildingTiles().some(tile => !tile.querySelector('.ogp-queue-add'))) {
+                    renderBuildTileButtons();
+                }
+            }).observe(technologies, { childList: true, subtree: true });
+        }
+
+        setInterval(renderBuildQueuePanel, 1000);
     }
 
     function isLoggedIn() {
@@ -3384,12 +4022,7 @@
             return;
         }
 
-        const state = loadLaunchState();
-        const panicState = loadPanicState();
-        const fleeState = loadFleeState();
-        const hasActiveFlee = Object.values(fleeState).some(s => s && s.active);
-
-        if ((state && state.active) || (panicState && panicState.active) || hasActiveFlee) {
+        if (isActionInProgress()) {
             console.log('[Monitor] Action en cours, pas de clic aléatoire');
             return;
         }
@@ -3417,12 +4050,7 @@
         console.log(`[Monitor] Vérification des expéditions toutes les ${CONFIG.expeditionCheckInterval / 1000}s`);
 
         setInterval(async () => {
-            const state = loadLaunchState();
-            const panicState = loadPanicState();
-            const fleeState = loadFleeState();
-            const hasActiveFlee = Object.values(fleeState).some(s => s && s.active);
-
-            if ((state && state.active) || (panicState && panicState.active) || hasActiveFlee) {
+            if (isActionInProgress()) {
                 console.log('[Monitor] Action en cours, vérification ignorée');
                 return;
             }
@@ -3431,6 +4059,7 @@
             await waitForEventContent(5000);
             checkAlerts();
             checkExpeditions();
+            await checkBuildQueues();
         }, CONFIG.expeditionCheckInterval);
     }
 
@@ -3447,6 +4076,7 @@
         }
 
         createConfigPanel();
+        initBuildQueueUI();
 
         if (!CONFIG.discordWebhook) {
             console.log('[Monitor] ⚠️ Webhook Discord non configuré : ouvrez le panneau ⚙️ pour le renseigner');
@@ -3512,6 +4142,15 @@
             return;
         }
 
+        const buildState = loadBuildState();
+        if (buildState && buildState.active) {
+            console.log('[Build] Reprise de la file de construction...');
+            await processBuildState();
+            if (isActionInProgress()) {
+                return;
+            }
+        }
+
         if (!isLoggedIn()) {
             handleDisconnected();
         } else {
@@ -3530,6 +4169,7 @@
 
             checkAlerts();
             checkExpeditions();
+            await checkBuildQueues();
             startExpeditionChecker();
             scheduleNextClick();
         }

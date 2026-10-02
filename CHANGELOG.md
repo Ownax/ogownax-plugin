@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.0
+
+- **File de construction par planète/lune** : bouton « + » sur chaque bâtiment (pages Ressources et Installations) pour ajouter le niveau suivant à la file ; badge « → N » sur la tuile.
+- Panneau en bas à droite : file de la planète affichée, statut (raison OGame si bloqué), compte à rebours de la prochaine vérification, boutons ▲ (monter) et ✕ (retirer).
+- Lancement automatique quand aucun bâtiment n'est en construction et qu'OGame indique le bâtiment disponible ; navigation automatique vers la planète/page concernée lors du cycle de vérification ; notifications Discord (lancement, file terminée).
+- Section « 🏗️ File de construction » dans ⚙️ : activation, intervalle de revérification, vue de toutes les files avec bouton pour vider.
+
 ## 1.7.1
 
 - Suppression de la popup de confirmation à la désactivation du plugin.
