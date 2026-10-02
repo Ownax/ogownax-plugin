@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.0
+
+- Panneau de configuration réorganisé en onglets : 🛡️ Défense (panic + repli), 🚀 Expéditions, 🏗️ Construction, 🔔 Alertes (Discord + délais entre alertes), ⚙️ Général (cycle de vérification, clic aléatoire, reconnexion). Le dernier onglet ouvert est mémorisé ; les boutons Sauvegarder/Reset/Fermer restent visibles en bas.
+- File de construction : revérification par défaut à 60 s ; bouton « + » en bas à gauche de la vignette ; panneau de file remonté pour ne plus masquer le bandeau du bas.
+- Correction : le panneau ⚙️ s'ouvre dès le premier clic (il fallait cliquer deux fois).
+
 ## 1.8.0
 
 - **File de construction par planète/lune** : bouton « + » sur chaque bâtiment (pages Ressources et Installations) pour ajouter le niveau suivant à la file ; badge « → N » sur la tuile.

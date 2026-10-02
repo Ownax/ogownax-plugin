@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.8.0
+// @version      1.9.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -62,7 +62,7 @@
         },
         buildQueue: {
             enabled: true,
-            recheckInterval: 5 * 60,
+            recheckInterval: 60,
         }
     };
 
@@ -2317,7 +2317,7 @@
                 border: 2px solid #3c5a6a;
                 border-radius: 8px;
                 padding: 15px;
-                width: 450px;
+                width: 470px;
                 max-height: 80vh;
                 overflow-y: auto;
                 color: #9fc3d6;
@@ -2408,6 +2408,54 @@
                 margin-top: 5px;
                 background: linear-gradient(180deg, #1a3a4a 0%, #0d1f29 100%);
                 color: #9fc3d6;
+            }
+            #ogame-plugin-panel .cfg-tabs {
+                display: flex;
+                gap: 3px;
+                margin-bottom: 12px;
+                border-bottom: 1px solid #3c5a6a;
+            }
+            #ogame-plugin-panel .cfg-tabs button {
+                flex: 1;
+                padding: 6px 2px;
+                background: #0a1520;
+                color: #6a9aaa;
+                border: 1px solid #2c4a5a;
+                border-bottom: none;
+                border-radius: 4px 4px 0 0;
+                font-size: 10px;
+                white-space: nowrap;
+            }
+            #ogame-plugin-panel .cfg-tabs button:hover {
+                color: #9fc3d6;
+            }
+            #ogame-plugin-panel .cfg-tabs button.active {
+                background: #1a3a4a;
+                color: #6fcfff;
+                border-color: #3c5a6a;
+                font-weight: bold;
+            }
+            #ogame-plugin-panel .cfg-tab {
+                display: none;
+            }
+            #ogame-plugin-panel .cfg-tab.active {
+                display: block;
+            }
+            #ogame-plugin-panel .cfg-tab > .section-title:first-child {
+                margin-top: 0;
+            }
+            #ogame-plugin-panel .cfg-grid {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 0 10px;
+            }
+            #ogame-plugin-panel .btn-group {
+                position: sticky;
+                bottom: -15px;
+                margin: 15px -15px -15px;
+                padding: 10px 15px 15px;
+                background: #061015;
+                border-top: 1px solid #2c4a5a;
             }
             #ogame-plugin-panel .section-title {
                 color: #6fcfff;
@@ -2588,225 +2636,226 @@
 
         const panel = document.createElement('div');
         panel.id = 'ogame-plugin-panel';
+        const speedOptions = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+            .map(v => `<option value="${v}">${v}%</option>`).join('');
+
         panel.innerHTML = `
-            <h3>⚙️ Configuration OgOwnax Plugin <span class="plugin-version">v${GM_info.script.version}</span></h3>
+            <h3>⚙️ OgOwnax Plugin <span class="plugin-version">v${GM_info.script.version}</span></h3>
 
-            <div class="section-title panic">🚨 Mode Panic (Global)</div>
+            <div class="cfg-tabs">
+                <button data-tab="defense">🛡️ Défense</button>
+                <button data-tab="expeditions">🚀 Expéditions</button>
+                <button data-tab="build">🏗️ Construction</button>
+                <button data-tab="alerts">🔔 Alertes</button>
+                <button data-tab="general">⚙️ Général</button>
+            </div>
 
-            <div class="panic-box">
-                <div class="config-group">
-                    <label>Source (où se trouve la flotte)</label>
-                    <select id="cfg-panic-source">
-                        <option value="">-- Sélectionner --</option>
-                    </select>
+            <div class="cfg-tab" data-tab="defense">
+                <div class="section-title panic">🚨 Panic (bouton global)</div>
+
+                <div class="panic-box">
+                    <div class="config-group">
+                        <label>Source (où se trouve la flotte)</label>
+                        <select id="cfg-panic-source">
+                            <option value="">-- Sélectionner --</option>
+                        </select>
+                    </div>
+
+                    <div class="config-group">
+                        <label>Destination (où envoyer la flotte)</label>
+                        <select id="cfg-panic-destination">
+                            <option value="">-- Sélectionner --</option>
+                        </select>
+                    </div>
+
+                    <div class="cfg-grid">
+                        <div class="config-group">
+                            <label>Vitesse</label>
+                            <select id="cfg-panic-speed">${speedOptions}</select>
+                        </div>
+                        <div class="config-group">
+                            <label>Délai avant impact (s)</label>
+                            <input type="number" id="cfg-panic-delay" min="5" max="60">
+                        </div>
+                    </div>
+                    <div class="hint">Vitesse recommandée : 10 % pour maximiser le temps de vol</div>
+
+                    <div class="config-group" style="margin-top: 10px;">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="cfg-panic-auto">
+                            🔥 Auto-Panic en cas d'attaque
+                        </label>
+                        <div class="hint">Déclenche automatiquement le panic X secondes avant l'impact</div>
+                    </div>
                 </div>
 
-                <div class="config-group">
-                    <label>Destination (où envoyer la flotte)</label>
-                    <select id="cfg-panic-destination">
-                        <option value="">-- Sélectionner --</option>
-                    </select>
-                </div>
+                <div class="section-title flee">🏃 Repli automatique (par planète/lune)</div>
 
-                <div class="config-group">
-                    <label>Vitesse (%)</label>
-                    <select id="cfg-panic-speed">
-                        <option value="10">10%</option>
-                        <option value="20">20%</option>
-                        <option value="30">30%</option>
-                        <option value="40">40%</option>
-                        <option value="50">50%</option>
-                        <option value="60">60%</option>
-                        <option value="70">70%</option>
-                        <option value="80">80%</option>
-                        <option value="90">90%</option>
-                        <option value="100">100%</option>
-                    </select>
-                    <div class="hint">Vitesse recommandée: 10% pour maximiser le temps de vol</div>
+                <div class="flee-box">
+                    <div class="config-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="cfg-flee-enabled">
+                            Activer le repli automatique
+                        </label>
+                        <div class="hint">Envoie flotte + ressources de la planète attaquée vers sa destination de repli</div>
+                    </div>
+
+                    <div class="cfg-grid">
+                        <div class="config-group">
+                            <label>Vitesse</label>
+                            <select id="cfg-flee-speed">${speedOptions}</select>
+                        </div>
+                        <div class="config-group">
+                            <label>Délai avant impact (s)</label>
+                            <input type="number" id="cfg-flee-delay" min="5" max="600">
+                        </div>
+                    </div>
+                    <div class="hint">Ex. : 240 = repli 4 minutes avant l'impact</div>
+
+                    <div class="section-title" style="margin-top: 10px; font-size: 11px;">Destinations de repli</div>
+                    <div id="cfg-flee-destinations-container"></div>
                 </div>
             </div>
 
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-panic-auto">
-                    🔥 Auto-Panic en cas d'attaque
-                </label>
-                <div class="hint">Déclenche automatiquement le panic avant l'impact</div>
-            </div>
+            <div class="cfg-tab" data-tab="expeditions">
+                <div class="section-title">
+                    🚀 Expéditions par planète/lune
+                    <button class="refresh-btn" id="cfg-refresh-expeditions" title="Rafraîchir">🔄</button>
+                </div>
 
-            <div class="config-group">
-                <label>Délai avant impact (en secondes)</label>
-                <input type="number" id="cfg-panic-delay" min="5" max="60" style="width: 80px;">
-                <div class="hint">Le panic sera déclenché X secondes avant l'impact</div>
-            </div>
+                <div id="cfg-expeditions-container"></div>
 
-            <div class="section-title flee">🏃 Repli automatique (par planète/lune)</div>
+                <button class="btn-launch" id="cfg-launch-expeditions">
+                    🚀 Lancer les expéditions manquantes
+                </button>
 
-            <div class="flee-box">
+                <div class="section-title">Automatisation</div>
+
                 <div class="config-group">
                     <label class="checkbox-label">
-                        <input type="checkbox" id="cfg-flee-enabled">
-                        Activer le repli automatique
+                        <input type="checkbox" id="cfg-auto-launch">
+                        Lancement automatique des expéditions manquantes
                     </label>
-                    <div class="hint">Envoie automatiquement la flotte + ressources vers la destination de repli configurée</div>
                 </div>
 
                 <div class="config-group">
-                    <label>Vitesse de repli (%)</label>
-                    <select id="cfg-flee-speed">
-                        <option value="10">10%</option>
-                        <option value="20">20%</option>
-                        <option value="30">30%</option>
-                        <option value="40">40%</option>
-                        <option value="50">50%</option>
-                        <option value="60">60%</option>
-                        <option value="70">70%</option>
-                        <option value="80">80%</option>
-                        <option value="90">90%</option>
-                        <option value="100">100%</option>
-                    </select>
+                    <label>Créneau horaire</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="number" id="cfg-expedition-start-hour" min="0" max="23" style="width: 60px;" placeholder="--">
+                        <span>h à</span>
+                        <input type="number" id="cfg-expedition-end-hour" min="0" max="23" style="width: 60px;" placeholder="--">
+                        <span>h</span>
+                    </div>
+                    <div class="hint">Laisser vide pour aucune limite (ex. : 8 à 22 pour 8h-22h)</div>
+                </div>
+            </div>
+
+            <div class="cfg-tab" data-tab="build">
+                <div class="section-title">🏗️ File de construction</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-buildqueue-enabled">
+                        Lancement automatique des constructions
+                    </label>
+                    <div class="hint">Lance le prochain bâtiment de la file dès que la planète est libre et que les ressources sont disponibles</div>
                 </div>
 
                 <div class="config-group">
-                    <label>Délai avant impact (en secondes)</label>
-                    <input type="number" id="cfg-flee-delay" min="5" max="600" style="width: 80px;">
-                    <div class="hint">Le repli sera déclenché X secondes avant l'impact (ex: 240 = 4 minutes avant)</div>
+                    <label>Revérification si ressources insuffisantes (s)</label>
+                    <input type="number" id="cfg-buildqueue-recheck" min="60" max="3600" style="width: 80px;">
                 </div>
 
-                <div class="section-title" style="margin-top: 10px; font-size: 11px;">Destinations de repli</div>
-                <div id="cfg-flee-destinations-container">
+                <div class="section-title">Files en cours</div>
+                <div id="cfg-buildqueue-container"></div>
+            </div>
+
+            <div class="cfg-tab" data-tab="alerts">
+                <div class="section-title">💬 Discord</div>
+
+                <div class="config-group">
+                    <label>Webhook Discord</label>
+                    <textarea id="cfg-webhook" rows="2" placeholder="https://discord.com/api/webhooks/..."></textarea>
+                    <div class="hint">Stocké dans Tampermonkey (commun à tous les univers de ce navigateur), jamais dans le script</div>
+                    <button class="btn-test" id="cfg-test-webhook">📨 Tester le webhook</button>
+                </div>
+
+                <div class="section-title">🔔 Alertes</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-alert-attack">
+                        ⚔️ Alerte attaque
+                    </label>
+                </div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-alert-espionage">
+                        🔍 Alerte espionnage
+                    </label>
+                </div>
+
+                <div class="section-title">⏱️ Délai minimum entre deux alertes (s)</div>
+
+                <div class="cfg-grid">
+                    <div class="config-group">
+                        <label>Attaque</label>
+                        <input type="number" id="cfg-cd-attack" min="1">
+                    </div>
+                    <div class="config-group">
+                        <label>Espionnage</label>
+                        <input type="number" id="cfg-cd-espionage" min="1">
+                    </div>
+                    <div class="config-group">
+                        <label>Expédition</label>
+                        <input type="number" id="cfg-cd-expedition" min="1">
+                    </div>
+                    <div class="config-group">
+                        <label>Déconnexion</label>
+                        <input type="number" id="cfg-cd-disconnected" min="1">
+                    </div>
                 </div>
             </div>
 
-            <div class="section-title">🏗️ File de construction</div>
+            <div class="cfg-tab" data-tab="general">
+                <div class="section-title">🔁 Cycle de vérification</div>
 
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-buildqueue-enabled">
-                    Lancement automatique des constructions
-                </label>
-                <div class="hint">Lance le prochain bâtiment de la file dès que la planète est libre et que les ressources sont disponibles</div>
-            </div>
-
-            <div class="config-group">
-                <label>Revérification si ressources insuffisantes (en secondes)</label>
-                <input type="number" id="cfg-buildqueue-recheck" min="60" max="3600" style="width: 80px;">
-            </div>
-
-            <div id="cfg-buildqueue-container"></div>
-
-            <div class="section-title">🔔 Alertes</div>
-
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-alert-attack">
-                    ⚔️ Alerte attaque
-                </label>
-                <div class="hint">Notifie sur Discord lors d'une attaque ennemie</div>
-            </div>
-
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-alert-espionage">
-                    🔍 Alerte espionnage
-                </label>
-                <div class="hint">Notifie sur Discord lors d'un espionnage ennemi</div>
-            </div>
-
-            <div class="config-group">
-                <label>Webhook Discord</label>
-                <textarea id="cfg-webhook" rows="2" placeholder="https://discord.com/api/webhooks/..."></textarea>
-                <div class="hint">Stocké dans Tampermonkey (commun à tous les univers de ce navigateur), jamais dans le script</div>
-                <button class="btn-test" id="cfg-test-webhook">📨 Tester le webhook</button>
-            </div>
-
-            <div class="section-title">
-                🚀 Expéditions par planète/lune
-                <button class="refresh-btn" id="cfg-refresh-expeditions" title="Rafraîchir">🔄</button>
-            </div>
-
-            <div id="cfg-expeditions-container">
-            </div>
-
-            <div class="config-group" style="margin-top: 10px;">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-auto-launch">
-                    Lancement automatique des expéditions
-                </label>
-                <div class="hint">Lance automatiquement les expéditions manquantes</div>
-            </div>
-
-            <div class="config-group">
-                <label>Créneau horaire d'expédition</label>
-                <div style="display: flex; gap: 10px; align-items: center;">
-                    <input type="number" id="cfg-expedition-start-hour" min="0" max="23" style="width: 60px;" placeholder="--">
-                    <span>h à</span>
-                    <input type="number" id="cfg-expedition-end-hour" min="0" max="23" style="width: 60px;" placeholder="--">
-                    <span>h</span>
+                <div class="config-group">
+                    <label>Intervalle (s)</label>
+                    <input type="number" id="cfg-expedition-check-interval" min="10" max="600" style="width: 80px;">
+                    <div class="hint">Fréquence de vérification des alertes, expéditions et files de construction</div>
                 </div>
-                <div class="hint">Laisser vide pour aucune limite (ex: 8 à 22 pour 8h-22h)</div>
-            </div>
 
-            <div class="config-group">
-                <label>Intervalle de vérification (en secondes)</label>
-                <input type="number" id="cfg-expedition-check-interval" min="10" max="600">
-                <div class="hint">Fréquence de vérification des expéditions manquantes</div>
-            </div>
+                <div class="section-title">🖱️ Clic aléatoire</div>
 
-            <button class="btn-launch" id="cfg-launch-expeditions">
-                🚀 Lancer les expéditions manquantes
-            </button>
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-random-click-enabled">
+                        Activer le clic aléatoire
+                    </label>
+                    <div class="hint">Clique sur une planète aléatoire pour maintenir la session active</div>
+                </div>
 
-            <div class="section-title">🖱️ Navigation automatique</div>
+                <div class="config-group">
+                    <label>Intervalle (s)</label>
+                    <input type="number" id="cfg-random-click-interval" min="60" max="3600" style="width: 80px;">
+                    <div class="hint">Clic aléatoire entre -30 s et +30 s de cette valeur (min : 60 s)</div>
+                </div>
 
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-random-click-enabled">
-                    Activer le clic aléatoire
-                </label>
-                <div class="hint">Clique sur une planète aléatoire pour maintenir la session active</div>
-            </div>
+                <div class="section-title">🔄 Reconnexion</div>
 
-            <div class="config-group">
-                <label>Intervalle clic aléatoire (en secondes)</label>
-                <input type="number" id="cfg-random-click-interval" min="60" max="3600">
-                <div class="hint">Clic aléatoire entre -30s et +30s de cette valeur (min: 60s)</div>
-            </div>
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-auto-reconnect">
+                        Reconnexion automatique
+                    </label>
+                </div>
 
-            <div class="section-title">⏱️ Cooldowns (en secondes)</div>
-
-            <div class="config-group">
-                <label>Cooldown expédition</label>
-                <input type="number" id="cfg-cd-expedition" min="1">
-            </div>
-
-            <div class="config-group">
-                <label>Cooldown attaque</label>
-                <input type="number" id="cfg-cd-attack" min="1">
-            </div>
-
-            <div class="config-group">
-                <label>Cooldown espionnage</label>
-                <input type="number" id="cfg-cd-espionage" min="1">
-            </div>
-
-            <div class="config-group">
-                <label>Cooldown déconnexion</label>
-                <input type="number" id="cfg-cd-disconnected" min="1">
-            </div>
-
-            <div class="section-title">🔄 Reconnexion</div>
-
-            <div class="config-group">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="cfg-auto-reconnect">
-                    Reconnexion automatique
-                </label>
-            </div>
-
-            <div class="config-group">
-                <label>Délai reconnexion (en secondes)</label>
-                <input type="number" id="cfg-reconnect-delay" min="1">
+                <div class="config-group">
+                    <label>Délai avant reconnexion (s)</label>
+                    <input type="number" id="cfg-reconnect-delay" min="1" style="width: 80px;">
+                </div>
             </div>
 
             <div class="btn-group">
@@ -2817,10 +2866,21 @@
         `;
         document.body.appendChild(panel);
 
+        const showConfigTab = (name) => {
+            panel.querySelectorAll('[data-tab]').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+            try { localStorage.setItem('ogame_plugin_config_tab', name); } catch (e) {}
+        };
+        panel.querySelectorAll('.cfg-tabs button').forEach(btn => {
+            btn.addEventListener('click', () => showConfigTab(btn.dataset.tab));
+        });
+        let initialTab = 'defense';
+        try { initialTab = localStorage.getItem('ogame_plugin_config_tab') || initialTab; } catch (e) {}
+        showConfigTab(panel.querySelector(`.cfg-tab[data-tab="${initialTab}"]`) ? initialTab : 'defense');
+
         updateWebhookIndicator();
 
         document.getElementById('ogame-plugin-btn').addEventListener('click', () => {
-            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+            panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
             if (panel.style.display === 'block') {
                 loadFormValues();
             }
@@ -3285,7 +3345,7 @@
             },
             buildQueue: {
                 enabled: document.getElementById('cfg-buildqueue-enabled').checked,
-                recheckInterval: Math.max(60, parseInt(document.getElementById('cfg-buildqueue-recheck').value) || 300),
+                recheckInterval: Math.max(60, parseInt(document.getElementById('cfg-buildqueue-recheck').value) || 60),
             }
         };
 
@@ -3549,7 +3609,7 @@
             return null;
         }
 
-        const recheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 300) * 1000;
+        const recheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 60) * 1000;
 
         if (tile.dataset.status === 'on') {
             try {
@@ -3626,7 +3686,7 @@
                 clearBuildState();
                 const queues = loadBuildQueues();
                 if (queues[state.planetId]) {
-                    queues[state.planetId].nextCheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 300) * 1000;
+                    queues[state.planetId].nextCheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 60) * 1000;
                     saveBuildQueues(queues);
                 }
                 return;
@@ -3656,7 +3716,7 @@
         style.textContent = `
             #technologies li.technology .ogp-queue-add {
                 position: absolute;
-                top: 2px;
+                bottom: 2px;
                 left: 2px;
                 z-index: 5;
                 width: 18px;
@@ -3689,7 +3749,7 @@
             }
             #ogame-plugin-buildqueue {
                 position: fixed;
-                bottom: 10px;
+                bottom: 45px;
                 right: 10px;
                 z-index: 10000;
                 width: 280px;
