@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.12.0
+
+- File de construction : l'heure estimée et le minuteur se recalculent quand les ressources changent **sans rechargement** :
+  - interception de `reloadResources` (OGame recharge stock + production, ex. arrivée de flotte) ;
+  - filet de sécurité : si le stock affiché s'écarte de la prévision (> 1 % ou 50), le calcul repart du stock réel.
+- Après un F5 / changement de page, l'échéance est recalée **dans les deux sens** (avancée ou repoussée) ; plus de rechargement superflu quand les ressources sont déjà toutes là.
+- Désaccord « OGame dit pas assez / le calcul dit prêt » : nouvel essai dans 15 s au lieu de l'intervalle complet ; le panneau affiche « ⏳ Ressources presque disponibles ».
+- Filet de sécurité du minuteur : réarmé automatiquement s'il manque (ex. page chargée pendant un lancement d'expéditions).
+- **Journal** de la file (80 dernières lignes) dans ⚙️ → Construction, pour comprendre après coup ce qui s'est passé.
+
 ## 1.11.1
 
 - File de construction : contrôle après « Lancement… » ramené de 30 s à 10 s.

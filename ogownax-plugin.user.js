@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.11.1
+// @version      1.12.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -9,6 +9,7 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      discord.com
 // @connect      discordapp.com
 // @run-at       document-idle
@@ -2463,6 +2464,20 @@
             #ogame-plugin-panel .cfg-tab > .section-title:first-child {
                 margin-top: 0;
             }
+            #ogame-plugin-panel .bq-log {
+                max-height: 200px;
+                overflow-y: auto;
+                margin: 0;
+                padding: 6px;
+                background: #0a1520;
+                border: 1px solid #2c4a5a;
+                border-radius: 4px;
+                color: #9fc3d6;
+                font-family: Consolas, monospace;
+                font-size: 10px;
+                white-space: pre-wrap;
+                word-break: break-word;
+            }
             #ogame-plugin-panel .cfg-grid {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
@@ -2787,6 +2802,12 @@
 
                 <div class="section-title">Files en cours</div>
                 <div id="cfg-buildqueue-container"></div>
+
+                <div class="section-title">
+                    📜 Journal
+                    <button class="refresh-btn" id="cfg-buildqueue-log-refresh" title="Rafraîchir">🔄</button>
+                </div>
+                <pre id="cfg-buildqueue-log" class="bq-log"></pre>
             </div>
 
             <div class="cfg-tab" data-tab="alerts">
@@ -2939,6 +2960,7 @@
             renderFleeDestinations();
         });
         document.getElementById('cfg-launch-expeditions').addEventListener('click', launchMissingExpeditions);
+        document.getElementById('cfg-buildqueue-log-refresh').addEventListener('click', renderBuildLog);
     }
 
     function updateWebhookIndicator() {
@@ -3274,6 +3296,7 @@
         renderExpeditionsConfig();
         renderFleeDestinations();
         renderBuildQueueConfig();
+        renderBuildLog();
     }
 
     function saveFormValues() {
@@ -3386,6 +3409,40 @@
 
     function serverSecondsToLocalMs(seconds) {
         return seconds * 1000 - SERVER_OFFSET_MS;
+    }
+
+    // Journal conservé (localStorage de l'univers) pour comprendre après coup ce qu'a fait la file
+    const BUILD_LOG_KEY = 'ogame_plugin_build_log';
+    const BUILD_LOG_SIZE = 80;
+
+    function buildLog(...args) {
+        const text = args
+            .map(a => a instanceof Error ? a.message : (typeof a === 'string' ? a : JSON.stringify(a)))
+            .join(' ');
+        console.log('[Build]', text);
+        try {
+            const log = JSON.parse(localStorage.getItem(BUILD_LOG_KEY) || '[]');
+            log.push({ t: Date.now(), p: getCurrentPlanetCoords(), m: text });
+            localStorage.setItem(BUILD_LOG_KEY, JSON.stringify(log.slice(-BUILD_LOG_SIZE)));
+        } catch (e) {}
+    }
+
+    function renderBuildLog() {
+        const container = document.getElementById('cfg-buildqueue-log');
+        if (!container) return;
+        let log = [];
+        try {
+            log = JSON.parse(localStorage.getItem(BUILD_LOG_KEY) || '[]');
+        } catch (e) {}
+        if (log.length === 0) {
+            container.textContent = 'Journal vide';
+            return;
+        }
+        container.textContent = log.slice().reverse().map(entry => {
+            const d = new Date(entry.t);
+            const time = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+            return `${time} [${entry.p || '?'}] ${entry.m}`;
+        }).join('\n');
     }
 
     function loadBuildQueues() {
@@ -3579,7 +3636,7 @@
         queues[key] = queue;
         saveBuildQueues(queues);
 
-        console.log(`[Build] Ajout file ${body.coords} (${body.type}): ${queue.items[queue.items.length - 1].name} niv. ${targetLevel}`);
+        buildLog(`Ajout file ${body.coords} (${body.type}): ${queue.items[queue.items.length - 1].name} niv. ${targetLevel}`);
         renderBuildQueueUI();
     }
 
@@ -3644,8 +3701,26 @@
 
     const BUILD_RESOURCES = ['metal', 'crystal', 'deuterium'];
     const RESOURCE_LABELS = { metal: 'métal', crystal: 'cristal', deuterium: 'deutérium', energy: 'énergie' };
-    const PAGE_LOADED_AT = Date.now();
     let pageResourcesCache;
+    // Instant auquel correspond le stock mémorisé (chargement de la page, ou dernière mise à jour détectée)
+    let resourcesSnapshotAt = Date.now();
+
+    function setResourcesSnapshot(resources, at = Date.now()) {
+        const snapshot = {
+            // Bilan énergétique disponible (ne s'accumule pas avec le temps)
+            energy: { amount: Number(resources.energy?.amount) || 0 },
+        };
+        BUILD_RESOURCES.forEach(r => {
+            const res = resources[r] || {};
+            snapshot[r] = {
+                amount: Number(res.amount) || 0,
+                production: Number(res.production) || 0,
+                storage: Number(res.storage) || Infinity,
+            };
+        });
+        pageResourcesCache = snapshot;
+        resourcesSnapshotAt = at;
+    }
 
     // Stock, production/s (bonus compris) et stockage de la planète affichée,
     // lus dans l'appel reloadResources({...}) que la page contient au chargement
@@ -3671,21 +3746,9 @@
             else if (c === '{') depth++;
             else if (c === '}' && --depth === 0) {
                 try {
-                    const resources = JSON.parse(script.slice(start, i + 1)).resources;
-                    pageResourcesCache = {
-                        // Bilan énergétique disponible (ne s'accumule pas avec le temps)
-                        energy: { amount: Number(resources.energy?.amount) || 0 },
-                    };
-                    BUILD_RESOURCES.forEach(r => {
-                        const res = resources[r] || {};
-                        pageResourcesCache[r] = {
-                            amount: Number(res.amount) || 0,
-                            production: Number(res.production) || 0,
-                            storage: Number(res.storage) || Infinity,
-                        };
-                    });
+                    setResourcesSnapshot(JSON.parse(script.slice(start, i + 1)).resources, resourcesSnapshotAt);
                 } catch (e) {
-                    console.log('[Build] Lecture des ressources impossible:', e);
+                    buildLog('Lecture des ressources impossible:', e);
                 }
                 break;
             }
@@ -3693,13 +3756,85 @@
         return pageResourcesCache;
     }
 
-    // Stock estimé à un instant donné : stock au chargement + production écoulée (plafonnée au stockage)
+    // Stock estimé à un instant donné : stock mémorisé + production écoulée (plafonnée au stockage)
     function getResourceAmountAt(resource, time) {
         const res = getPageResources()?.[resource];
         if (!res) return null;
         if (res.amount >= res.storage) return res.amount;
-        const produced = res.production * Math.max(0, time - PAGE_LOADED_AT) / 1000;
+        const produced = res.production * Math.max(0, time - resourcesSnapshotAt) / 1000;
         return Math.min(res.storage, res.amount + produced);
+    }
+
+    // Stock affiché en haut de page (OGame le fait avancer chaque seconde ; il change aussi
+    // quand une flotte arrive ou qu'une dépense est faite). null si illisible (ex. « 1,2M »).
+    function readDisplayedResource(resource) {
+        const el = document.getElementById(`resources_${resource}`);
+        if (!el) return null;
+        const text = el.textContent.trim();
+        if (!/^[\d.\s ]+$/.test(text)) return null;
+        const value = parseInt(text.replace(/\D/g, ''), 10);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    // Ressources de la page mises à jour sans rechargement : on recalcule les estimations et le minuteur
+    let resourcesChangeTimer = null;
+    function onResourcesChanged(source) {
+        clearTimeout(resourcesChangeTimer);
+        resourcesChangeTimer = setTimeout(() => {
+            buildLog(`Ressources mises à jour (${source}), estimation recalculée`);
+            refreshBuildEstimateHere();
+            renderBuildQueuePanel();
+        }, 500);
+    }
+
+    function watchPageResources() {
+        // 1. OGame recharge les ressources (arrivée de flotte, action…) via reloadResources(data) :
+        //    nouveau stock ET nouvelle production
+        try {
+            const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            const original = page.reloadResources;
+            if (typeof original === 'function' && !original.__ogpWrapped) {
+                const wrapped = function (data) {
+                    try {
+                        if (data && data.resources && data.resources.metal) {
+                            setResourcesSnapshot(data.resources);
+                            onResourcesChanged('rechargement OGame');
+                        }
+                    } catch (e) {}
+                    return original.apply(this, arguments);
+                };
+                wrapped.__ogpWrapped = true;
+                page.reloadResources = wrapped;
+            }
+        } catch (e) {
+            buildLog('Interception de reloadResources impossible:', e);
+        }
+
+        // 2. Filet de sécurité : le stock affiché s'écarte nettement de la prévision
+        setInterval(() => {
+            const resources = getPageResources();
+            if (!resources) return;
+            const now = Date.now();
+            let changed = false;
+            BUILD_RESOURCES.forEach(r => {
+                const shown = readDisplayedResource(r);
+                const expected = getResourceAmountAt(r, now);
+                if (shown === null || expected === null) return;
+                if (Math.abs(shown - expected) > Math.max(50, expected * 0.01)) {
+                    resources[r].amount = shown;
+                    changed = true;
+                }
+            });
+            if (changed) {
+                // Les autres ressources repartent de leur valeur prévue à cet instant
+                BUILD_RESOURCES.forEach(r => {
+                    const shown = readDisplayedResource(r);
+                    if (shown === null) resources[r].amount = getResourceAmountAt(r, now);
+                });
+                resourcesSnapshotAt = now;
+                onResourcesChanged('stock affiché différent de la prévision');
+            }
+        }, 5000);
     }
 
     function isCostForItem(cost, item) {
@@ -3722,10 +3857,10 @@
                 const li = costs.querySelector(`li.resource.${r}[data-value]`);
                 cost[r] = li ? parseInt(li.dataset.value) || 0 : 0;
             });
-            console.log(`[Build] Coût ${item.name} niv. ${level}:`, cost);
+            buildLog(`Coût ${item.name} niv. ${level}:`, cost);
             return level === item.targetLevel ? cost : null;
         } catch (e) {
-            console.log('[Build] Coût introuvable:', e.message);
+            buildLog('Coût introuvable:', e.message);
             return null;
         } finally {
             if (!alreadyOpen) {
@@ -3801,16 +3936,23 @@
 
             const estimate = estimateBuildReady(queue.cost);
             if (!estimate || estimate.storageBlocked || estimate.energyBlocked) return;
+            const previousReadyAt = queue.readyAt;
             queue.readyAt = estimate.readyAt;
             changed = true;
 
-            if (estimate.readyAt) {
-                const blocker = getLaneBlocker(planetId, lane, queue.items[0], now);
-                const target = Math.max(now, estimate.readyAt + 5000, blocker ? blocker.until + 5000 : 0);
-                if (target < (queue.nextCheckAt || 0)) {
-                    console.log(`[Build] Ressources prêtes plus tôt que prévu (${formatClock(estimate.readyAt)}), vérification avancée`);
-                    queue.nextCheckAt = target;
+            // Ressources déjà toutes là : c'est l'évaluation sur la page qui décide (pas de rechargement en plus)
+            if (!estimate.readyAt || estimate.readyAt <= now) return;
+
+            // Échéance recalée dans les deux sens : plus tôt (flotte arrivée, production en hausse)
+            // ou plus tard (ressources dépensées, production en baisse)
+            const blocker = getLaneBlocker(planetId, lane, queue.items[0], now);
+            const target = Math.max(estimate.readyAt + 5000, blocker ? blocker.until + 5000 : 0);
+            if (Math.abs(target - (queue.nextCheckAt || 0)) > 3000) {
+                const moved = target < (queue.nextCheckAt || 0) ? 'avancée' : 'repoussée';
+                if (!previousReadyAt || Math.abs(estimate.readyAt - previousReadyAt) > 30 * 1000) {
+                    buildLog(`${queue.items[0].name} niv. ${queue.items[0].targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)} (vérification ${moved})`);
                 }
+                queue.nextCheckAt = target;
             }
         });
 
@@ -3854,7 +3996,7 @@
             return !tile || getTileReachedLevel(tile) < item.targetLevel;
         });
         if (queue.items.length !== before) {
-            console.log(`[Build] ${before - queue.items.length} élément(s) déjà construit(s) retiré(s)`);
+            buildLog(`${before - queue.items.length} élément(s) déjà construit(s) retiré(s)`);
         }
 
         if (queue.items.length === 0) {
@@ -3873,7 +4015,7 @@
             queue.busyUntil = constructionEnd;
             queue.readyAt = null;
             saveBuildQueues(queues);
-            console.log(`[Build] ${laneLabel} : construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
+            buildLog(`${laneLabel} : construction en cours sur ${body.coords}, prochaine vérification dans ${formatDelay(queue.nextCheckAt - Date.now())}`);
             renderBuildQueueUI();
             return null;
         }
@@ -3891,7 +4033,7 @@
             queue.status = blocker.reason;
             queue.nextCheckAt = blocker.until + 5000;
             saveBuildQueues(queues);
-            console.log(`[Build] ${laneLabel} : ${blocker.reason}, attente jusqu'à ${formatClock(blocker.until)}`);
+            buildLog(`${laneLabel} : ${blocker.reason}, attente jusqu'à ${formatClock(blocker.until)}`);
             renderBuildQueueUI();
             return null;
         }
@@ -3900,7 +4042,7 @@
         if (!tile) {
             queue.items.shift();
             saveBuildQueues(queues);
-            console.log(`[Build] ${item.name} introuvable sur ${body.coords}, retiré de la file`);
+            buildLog(`${item.name} introuvable sur ${body.coords}, retiré de la file`);
             notifyDiscord(`⚠️ **${laneLabel}** : ${item.name} introuvable sur ${formatBodyLabel(queue)}, retiré de la file`);
             renderBuildQueueUI();
             return null;
@@ -3910,7 +4052,7 @@
 
         if (tile.dataset.status === 'on') {
             try {
-                console.log(`[Build] Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
+                buildLog(`Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
                 queue.status = 'Lancement…';
                 queue.nextCheckAt = Date.now() + 10 * 1000;
                 saveBuildQueues(queues);
@@ -3918,7 +4060,7 @@
                 const icon = lane === 'lifeform' ? '🧬' : '🏗️';
                 notifyDiscord(`${icon} **Construction lancée** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
             } catch (e) {
-                console.log('[Build] Échec du lancement:', e);
+                buildLog('Échec du lancement:', e);
                 const current = loadBuildQueues();
                 if (current[key]) {
                     current[key].status = `Échec du lancement : ${e.message}`;
@@ -3946,17 +4088,21 @@
                     queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
                 } else if (estimate.energyBlocked) {
                     queue.status = 'Énergie insuffisante';
-                } else if (estimate.readyAt) {
-                    // Les ressources sont là mais OGame refuse encore (usine en extension, chantier occupé…) :
-                    // on garde le motif OGame et la revérification normale
-                    queue.nextCheckAt = estimate.readyAt > Date.now()
-                        ? estimate.readyAt + 5000
-                        : recheckAt;
+                } else if (estimate.readyAt && estimate.readyAt > Date.now()) {
+                    queue.nextCheckAt = estimate.readyAt + 5000;
+                    buildLog(`${item.name} niv. ${item.targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)}`);
+                } else if (estimate.readyAt && /ressource/i.test(reason)) {
+                    // Mon calcul dit « prêt » mais OGame dit « pas assez » (quelques unités d'écart, dépense entre-temps…) :
+                    // c'est OGame qui a raison, on revient vite plutôt que d'attendre l'intervalle complet
+                    queue.nextCheckAt = Date.now() + 15 * 1000;
+                    buildLog(`${item.name} niv. ${item.targetLevel} : OGame indique encore « ${reason} » alors que le calcul donne les ressources disponibles, nouvel essai dans 15 s`);
                 }
+                // Sinon les ressources sont là mais OGame refuse pour une autre raison (usine en extension, chantier occupé…) :
+                // motif OGame affiché et revérification normale
             }
         }
         saveBuildQueues(queues);
-        console.log(`[Build] ${item.name} niv. ${item.targetLevel} non disponible (${tile.dataset.status}): ${queue.status}`);
+        buildLog(`${item.name} niv. ${item.targetLevel} non disponible (${tile.dataset.status}): ${queue.status}`);
         renderBuildQueueUI();
         return null;
     }
@@ -3983,7 +4129,7 @@
         const bodyIds = new Set(getAllCelestialBodies().map(b => b.id));
         if (bodyIds.size > 0) {
             Object.keys(queues).filter(key => !bodyIds.has(getQueuePlanetId(key))).forEach(key => {
-                console.log(`[Build] ${queues[key].coords} n'existe plus, file supprimée`);
+                buildLog(`${queues[key].coords} n'existe plus, file supprimée`);
                 notifyDiscord(`⚠️ **File de construction supprimée** : ${formatBodyLabel(queues[key])} n'existe plus`);
                 delete queues[key];
                 changed = true;
@@ -4017,7 +4163,7 @@
             return;
         }
 
-        console.log(`[Build] Navigation vers ${queues[key].coords} (${firstItem.component}) pour la file de construction`);
+        buildLog(`Navigation vers ${queues[key].coords} (${firstItem.component}) pour la file de construction`);
         navigateToBuildPage(key, firstItem.component);
     }
 
@@ -4044,7 +4190,7 @@
                 buildCheckTimer = setTimeout(scheduleNextBuildCheck, 15000);
                 return;
             }
-            console.log('[Build] Échéance atteinte, vérification de la file');
+            buildLog('Échéance atteinte, vérification de la file');
             checkBuildQueues(false);
         }, delay);
     }
@@ -4055,7 +4201,7 @@
         const key = state.key || getQueueKey(state.planetId, getLaneOfComponent(state.component));
 
         if (Date.now() - state.startedAt > 2 * 60 * 1000) {
-            console.log('[Build] État de navigation expiré, abandon');
+            buildLog('État de navigation expiré, abandon');
             clearBuildState();
             return;
         }
@@ -4063,7 +4209,7 @@
         const onTarget = getCurrentPlanetId() === state.planetId && getCurrentPage() === state.component;
         if (!onTarget) {
             if (state.attempts >= 2) {
-                console.log('[Build] Impossible d\'atteindre la page cible, abandon');
+                buildLog('Impossible d\'atteindre la page cible, abandon');
                 clearBuildState();
                 const queues = loadBuildQueues();
                 if (queues[key]) {
@@ -4081,7 +4227,7 @@
         try {
             await waitForElement('#technologies li.technology', 5000);
         } catch (e) {
-            console.log('[Build] Bâtiments non chargés');
+            buildLog('Bâtiments non chargés');
             return;
         }
         await wait(500);
@@ -4242,7 +4388,11 @@
         const estimate = isCostForItem(queue.cost, queue.items[0]) ? estimateBuildReady(queue.cost) : null;
         if (!estimate) return null;
         const missingText = formatMissing(estimate.missing);
-        if (!missingText) return '✅ Ressources disponibles';
+        if (!missingText) {
+            return /ressource/i.test(queue.status || '')
+                ? '⏳ Ressources presque disponibles (confirmation OGame)'
+                : '✅ Ressources disponibles';
+        }
         if (estimate.storageBlocked) return `Manque : ${missingText} · ${estimate.storageBlocked}`;
         if (estimate.energyBlocked) return `Manque : ${missingText} · production d'énergie à augmenter`;
         if (estimate.readyAt) return `Manque : ${missingText} · prêt vers ${formatClock(estimate.readyAt)} (dans ${formatDelay(estimate.readyAt - Date.now())})`;
@@ -4381,6 +4531,18 @@
         }
 
         setInterval(renderBuildQueuePanel, 1000);
+
+        // Filet de sécurité : si aucun minuteur n'est armé (page chargée pendant une autre action du plugin,
+        // par exemple un lancement d'expéditions), on le réarme. Premier passage après 30 s pour laisser
+        // l'initialisation normale faire sa vérification sur la page fraîche.
+        setInterval(() => {
+            if (!CONFIG.buildQueue.enabled || buildCheckTimer || isActionInProgress()) return;
+            const pending = Object.values(loadBuildQueues()).some(q => q.items.length > 0);
+            if (pending) {
+                buildLog('Minuteur de la file réarmé');
+                scheduleNextBuildCheck();
+            }
+        }, 30 * 1000);
     }
 
     function isLoggedIn() {
@@ -4560,6 +4722,7 @@
         createConfigPanel();
         // Mémorise les constructions visibles sur cette page (bâtiment et/ou formes de vie)
         recordConstructionInfoHere();
+        watchPageResources();
         initBuildQueueUI();
 
         if (!CONFIG.discordWebhook) {
@@ -4628,7 +4791,7 @@
 
         const buildState = loadBuildState();
         if (buildState && buildState.active) {
-            console.log('[Build] Reprise de la file de construction...');
+            buildLog('Reprise de la file de construction...');
             await processBuildState();
             if (isActionInProgress()) {
                 return;
