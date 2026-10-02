@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.6.0
+// @version      1.7.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -24,6 +24,7 @@
     // de configuration et conservé dans le stockage Tampermonkey (GM_setValue),
     // partagé entre tous les univers OGame du navigateur.
     const WEBHOOK_STORAGE_KEY = 'discordWebhook';
+    const ENABLED_STORAGE_KEY = 'pluginEnabled';
 
     const DEFAULT_CONFIG = {
         alertAttack: true,
@@ -144,6 +145,75 @@
                 },
             });
         });
+    }
+
+    function isPluginEnabled() {
+        return GM_getValue(ENABLED_STORAGE_KEY, true);
+    }
+
+    async function setPluginEnabled(enabled) {
+        if (!enabled) {
+            if (!confirm('Désactiver complètement OgOwnax Plugin ?\n\nPlus aucune alerte, expédition, panic ni repli ne sera exécuté.\nLes actions en cours seront annulées.')) {
+                return;
+            }
+
+            cancelScheduledPanic();
+            Object.keys(scheduledFleeTimeouts).forEach(key => clearTimeout(scheduledFleeTimeouts[key]));
+            scheduledFleeTimeouts = {};
+            clearLaunchState();
+            clearPanicState();
+            saveFleeState({});
+            saveScheduledFlee({});
+            saveProcessedAttacks({});
+        }
+
+        GM_setValue(ENABLED_STORAGE_KEY, enabled);
+        console.log(`[Monitor] Plugin ${enabled ? 'activé' : 'désactivé'}`);
+        await notifyDiscord(enabled
+            ? `▶️ **OgOwnax Plugin activé** sur ${window.location.hostname}`
+            : `⏸️ **OgOwnax Plugin désactivé** sur ${window.location.hostname} - plus aucune alerte ne sera envoyée`);
+        window.location.reload();
+    }
+
+    function createToggleButton() {
+        const style = document.createElement('style');
+        style.textContent = `
+            #ogame-plugin-buttons {
+                position: fixed;
+                top: 50px;
+                right: 10px;
+                z-index: 10000;
+                display: flex;
+                gap: 5px;
+            }
+            #ogame-plugin-toggle {
+                padding: 8px 12px;
+                cursor: pointer;
+                font-size: 12px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            #ogame-plugin-toggle.enabled {
+                background: linear-gradient(180deg, #1a4a2a 0%, #0d2915 100%);
+                border: 1px solid #3c6a4a;
+                color: #9fffaf;
+            }
+            #ogame-plugin-toggle.disabled {
+                background: linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 100%);
+                border: 1px solid #6a3c3c;
+                color: #ff9f9f;
+            }
+        `;
+        document.head.appendChild(style);
+
+        const enabled = isPluginEnabled();
+        const btn = document.createElement('button');
+        btn.id = 'ogame-plugin-toggle';
+        btn.className = enabled ? 'enabled' : 'disabled';
+        btn.textContent = enabled ? '✅ Activé' : '⛔ Désactivé';
+        btn.title = enabled ? 'Cliquer pour désactiver complètement le plugin' : 'Cliquer pour réactiver le plugin';
+        btn.addEventListener('click', () => setPluginEnabled(!enabled));
+        return btn;
     }
 
     function loadLaunchState() {
@@ -2205,14 +2275,6 @@
             #ogame-plugin-timer.imminent .timer-value {
                 color: #cf6f6f;
             }
-            #ogame-plugin-buttons {
-                position: fixed;
-                top: 50px;
-                right: 10px;
-                z-index: 10000;
-                display: flex;
-                gap: 5px;
-            }
             #ogame-plugin-btn, #ogame-plugin-panic-btn {
                 background: linear-gradient(180deg, #1a3a4a 0%, #0d1f29 100%);
                 border: 1px solid #3c5a6a;
@@ -2516,6 +2578,7 @@
             <button id="ogame-plugin-panic-btn">🚨 PANIC</button>
             <button id="ogame-plugin-btn">⚙️ OgOwnax Plugin</button>
         `;
+        buttonsContainer.appendChild(createToggleButton());
         document.body.appendChild(buttonsContainer);
 
         const panel = document.createElement('div');
@@ -3376,6 +3439,15 @@
 
     async function init() {
         console.log(`[Monitor] OgOwnax Plugin v${GM_info.script.version}`);
+
+        if (!isPluginEnabled()) {
+            console.log('[Monitor] ⛔ Plugin désactivé : aucune surveillance ni action automatique');
+            const buttonsContainer = document.createElement('div');
+            buttonsContainer.id = 'ogame-plugin-buttons';
+            buttonsContainer.appendChild(createToggleButton());
+            document.body.appendChild(buttonsContainer);
+            return;
+        }
 
         createConfigPanel();
 
