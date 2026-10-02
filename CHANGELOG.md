@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.13.1
+
+- Correction : un bâtiment lancé restait dans la file. Le rechargement des ressources qui suit la dépense recalculait l'estimation du bâtiment lancé et repoussait d'une heure le contrôle post-lancement. Le coût mémorisé est désormais effacé au lancement.
+- Au chargement d'une page, une construction en cours ignorée de la file (lancement non contrôlé, construction manuelle) déclenche une resynchronisation immédiate.
+- Le stock affiché n'est plus utilisé que vers le haut (ressources reçues) : en arrière-plan, Chrome ralentit OGame et le chiffre affiché prend du retard, ce qui repoussait l'estimation chaque minute.
+- Correction d'une course de quelques millisecondes qui pouvait repousser de 5 s une file déjà prête.
+
 ## 1.13.0
 
 - Interface regroupée dans un bloc unique en bas à droite, de haut en bas : panneau ⚙️ (s'ouvre vers le haut), barre de boutons (🚨 PANIC · ⚙️ OgOwnax · interrupteur Activé avec voyant), files de construction, carte « ⏱️ Prochain clic ».

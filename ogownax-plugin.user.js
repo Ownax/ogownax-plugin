@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.13.0
+// @version      1.13.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3877,7 +3877,10 @@
                 const shown = readDisplayedResource(r);
                 const expected = getResourceAmountAt(r, now);
                 if (shown === null || expected === null) return;
-                if (Math.abs(shown - expected) > Math.max(50, expected * 0.01)) {
+                // Uniquement vers le haut (ressources reçues : récompense, flotte…). En arrière-plan, Chrome ralentit
+                // les minuteurs et le chiffre affiché par OGame prend du retard : un écart vers le bas n'est pas fiable.
+                // Les dépenses sont signalées par OGame lui-même via reloadResources.
+                if (shown - expected > Math.max(50, expected * 0.01)) {
                     resources[r].amount = shown;
                     changed = true;
                 }
@@ -3987,11 +3990,28 @@
 
         Object.keys(BUILD_LANES).forEach(lane => {
             const queue = queues[getQueueKey(planetId, lane)];
-            if (!queue || queue.items.length === 0 || !isCostForItem(queue.cost, queue.items[0])) return;
-            // Construction en cours dans cette file : l'échéance reste la fin de construction
+            if (!queue || queue.items.length === 0) return;
+            // Construction en cours dans cette file, déjà connue : l'échéance reste la fin de construction
             if ((queue.busyUntil || 0) > now) return;
 
-            const estimate = estimateBuildReady(queue.cost);
+            // La page montre une construction en cours que la file ignore (lancement non encore contrôlé,
+            // construction lancée à la main…) : on resynchronise tout de suite au lieu d'estimer
+            const constructionEnd = document.querySelector(BUILD_LANES[lane].box) ? getConstructionEnd(lane) : null;
+            if (constructionEnd && constructionEnd > now) {
+                if ((queue.nextCheckAt || 0) > now + 2000) {
+                    buildLog(`${BUILD_LANES[lane].title} : construction en cours détectée, resynchronisation`);
+                    queue.nextCheckAt = now;
+                    changed = true;
+                }
+                return;
+            }
+
+            // Déjà due : l'évaluation sur la page s'en charge à l'instant, on ne la déplace pas
+            if ((queue.nextCheckAt || 0) <= now) return;
+
+            if (!isCostForItem(queue.cost, queue.items[0])) return;
+
+            const estimate = estimateBuildReady(queue.cost, now);
             if (!estimate || estimate.storageBlocked || estimate.energyBlocked) return;
             const previousReadyAt = queue.readyAt;
             queue.readyAt = estimate.readyAt;
@@ -4132,6 +4152,11 @@
                 buildLog(`Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
                 queue.status = 'Lancement…';
                 queue.nextCheckAt = Date.now() + 10 * 1000;
+                // Le coût mémorisé est celui du bâtiment qu'on lance : sans ça, le rechargement des ressources
+                // qui suit la dépense ferait repousser le contrôle post-lancement (le bâtiment resterait dans la file)
+                queue.cost = null;
+                queue.readyAt = null;
+                queue.awaitingResources = false;
                 saveBuildQueues(queues);
                 await upgradeBuilding(tile, item.technologyId);
                 const icon = lane === 'lifeform' ? '🧬' : '🏗️';
