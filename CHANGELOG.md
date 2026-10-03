@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.2
+
+- Sauvegarde de la configuration : plus de popup « Configuration sauvegardée ! » ; le bouton ⚙️ affiche « ✅ Sauvegardé » pendant 2 s.
+
 ## 1.14.1
 
 - Expéditions : touche de lancement configurable (L ou S) dans ⚙️ → Expéditions. Par défaut L, comme avant.

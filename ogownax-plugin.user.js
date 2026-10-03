@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.14.1
+// @version      1.14.2
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3475,8 +3475,13 @@
         saveConfig(CONFIG);
         renderBuildQueuePanel();
         updateWebhookIndicator();
-        alert('Configuration sauvegardée !');
         closeConfigPanel();
+        // Confirmation dans la page (pas de popup navigateur)
+        const settingsBtn = document.getElementById('ogame-plugin-btn');
+        if (settingsBtn) {
+            settingsBtn.textContent = '✅ Sauvegardé';
+            setTimeout(() => { settingsBtn.textContent = '⚙️ OgOwnax'; }, 2000);
+        }
         const { discordWebhook, ...loggable } = CONFIG;
         console.log('[Monitor] Configuration mise à jour:', loggable);
     }
