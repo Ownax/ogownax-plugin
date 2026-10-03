@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.1
+
+- Expéditions : touche de lancement configurable (L ou S) dans ⚙️ → Expéditions. Par défaut L, comme avant.
+
 ## 1.14.0
 
 - **File « 🔬 Recherche »** : bouton « + » sur la page Recherche, file par planète (ce sont les ressources de cette planète qui paient), même fonctionnement que les bâtiments (lancement auto, ressources manquantes, heure estimée, notification « Recherche lancée »).

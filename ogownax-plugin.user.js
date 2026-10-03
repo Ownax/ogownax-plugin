@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.14.0
+// @version      1.14.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -34,6 +34,8 @@
         expeditionsPerBody: {},
         autoLaunchExpeditions: true,
         expeditionCheckInterval: 60 * 1000,
+        // Raccourci OGame appuyé sur la page Flotte pour composer l'expédition
+        expeditionKey: 'l',
         expeditionStartHour: null,
         expeditionEndHour: null,
         randomClickEnabled: true,
@@ -1908,9 +1910,10 @@
 
             case 'go_to_fleet':
                 if (currentPage === 'fleetdispatch') {
-                    console.log('[Monitor] Sur la page flotte, appui sur L');
+                    const expeditionKey = CONFIG.expeditionKey === 's' ? 's' : 'l';
+                    console.log(`[Monitor] Sur la page flotte, appui sur ${expeditionKey.toUpperCase()}`);
                     await wait(1000);
-                    pressKey('l');
+                    pressKey(expeditionKey);
                     saveLaunchState({ ...state, step: 'press_continue' });
                     await wait(500);
                     processLaunchState();
@@ -2839,6 +2842,15 @@
                 </div>
 
                 <div class="config-group">
+                    <label>Touche de lancement</label>
+                    <select id="cfg-expedition-key" style="width: 80px;">
+                        <option value="l">L</option>
+                        <option value="s">S</option>
+                    </select>
+                    <div class="hint">Raccourci OGame appuyé sur la page Flotte pour composer l'expédition</div>
+                </div>
+
+                <div class="config-group">
                     <label>Créneau horaire</label>
                     <div style="display: flex; gap: 10px; align-items: center;">
                         <input type="number" id="cfg-expedition-start-hour" min="0" max="23" style="width: 60px;" placeholder="--">
@@ -3337,6 +3349,7 @@
         document.getElementById('cfg-alert-espionage').checked = CONFIG.alertEspionage;
         document.getElementById('cfg-webhook').value = CONFIG.discordWebhook;
         document.getElementById('cfg-auto-launch').checked = CONFIG.autoLaunchExpeditions;
+        document.getElementById('cfg-expedition-key').value = CONFIG.expeditionKey === 's' ? 's' : 'l';
         document.getElementById('cfg-expedition-start-hour').value = CONFIG.expeditionStartHour !== null ? CONFIG.expeditionStartHour : '';
         document.getElementById('cfg-expedition-end-hour').value = CONFIG.expeditionEndHour !== null ? CONFIG.expeditionEndHour : '';
         document.getElementById('cfg-expedition-check-interval').value = CONFIG.expeditionCheckInterval / 1000;
@@ -3424,6 +3437,7 @@
             discordWebhook: document.getElementById('cfg-webhook').value.trim(),
             expeditionsPerBody,
             autoLaunchExpeditions: document.getElementById('cfg-auto-launch').checked,
+            expeditionKey: document.getElementById('cfg-expedition-key').value === 's' ? 's' : 'l',
             expeditionStartHour,
             expeditionEndHour,
             expeditionCheckInterval: (parseInt(document.getElementById('cfg-expedition-check-interval').value) || 60) * 1000,
