@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.17.0
+
+- **Pause pendant que vous jouez** (⚙️ → Général, activée par défaut, 60 s) : le lancement auto des expéditions, les files de construction (bâtiments, formes de vie, recherche) et le clic aléatoire attendent X secondes sans activité (souris, clavier, molette, navigation) avant de démarrer.
+- Seule l'activité réelle compte : les clics et touches simulés par le plugin sont ignorés.
+- Le panic, le repli automatique et les alertes Discord ne sont jamais retardés ; une action déjà commencée va jusqu'au bout.
+- Carte « 🖐️ Actions auto en pause · reprise dans … » dans le bloc du bas pendant la pause.
+
 ## 1.16.0
 
 - Expéditions : deux modes de composition dans ⚙️ → Expéditions :

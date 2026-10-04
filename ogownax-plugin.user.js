@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.16.0
+// @version      1.17.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -69,6 +69,11 @@
         buildQueue: {
             enabled: true,
             recheckInterval: 60,
+        },
+        // Les actions automatiques (expéditions, files, clic aléatoire) attendent X s sans activité humaine
+        idle: {
+            enabled: true,
+            delay: 60,
         }
     };
 
@@ -139,6 +144,7 @@
                     panic: { ...DEFAULT_CONFIG.panic, ...parsed.panic },
                     fleeConfig: { ...DEFAULT_CONFIG.fleeConfig, ...parsed.fleeConfig },
                     buildQueue: { ...DEFAULT_CONFIG.buildQueue, ...parsed.buildQueue },
+                    idle: { ...DEFAULT_CONFIG.idle, ...parsed.idle },
                 };
                 if (parsed.expeditionsPerPlanet && !parsed.expeditionsPerBody) {
                     config.expeditionsPerBody = {};
@@ -309,6 +315,21 @@
                 background: linear-gradient(180deg, #3a3a3a 0%, #1a1a1a 100%);
                 border-color: #7a3c3c;
                 color: #ff9f9f;
+            }
+            #ogame-plugin-idle {
+                flex-shrink: 0;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 7px 10px;
+                border-color: #6a5a3c;
+            }
+            #ogame-plugin-idle .idle-label {
+                color: #e6c98f;
+                font-weight: bold;
+            }
+            #ogame-plugin-idle .idle-value {
+                color: #cfaf6f;
             }
             #ogame-plugin-timer {
                 flex-shrink: 0;
@@ -2178,6 +2199,14 @@
             return;
         }
 
+        if (!isUserIdle()) {
+            console.log(`[Monitor] Activité en cours, lancement auto des expéditions reporté (${Math.round(getIdleRemaining() / 1000)}s)`);
+            runWhenIdle('expeditions', () => {
+                if (!isActionInProgress()) checkExpeditions();
+            });
+            return;
+        }
+
         if (!isInExpeditionTimeSlot()) {
             const start = CONFIG.expeditionStartHour !== null ? `${CONFIG.expeditionStartHour}h` : '0h';
             const end = CONFIG.expeditionEndHour !== null ? `${CONFIG.expeditionEndHour}h` : '24h';
@@ -3054,6 +3083,21 @@
                     <div class="hint">Fréquence de vérification des alertes, expéditions et files de construction</div>
                 </div>
 
+                <div class="section-title">🖐️ Pause pendant que vous jouez</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-idle-enabled">
+                        Attendre mon inactivité avant les actions automatiques
+                    </label>
+                    <div class="hint">Expéditions auto, files de construction et clic aléatoire attendent que vous n'ayez plus touché la souris ni le clavier. Le panic, le repli et les alertes ne sont jamais retardés.</div>
+                </div>
+
+                <div class="config-group">
+                    <label>Délai d'inactivité (s)</label>
+                    <input type="number" id="cfg-idle-delay" min="5" max="3600" style="width: 80px;">
+                </div>
+
                 <div class="section-title">🖱️ Clic aléatoire</div>
 
                 <div class="config-group">
@@ -3507,6 +3551,8 @@
 
         document.getElementById('cfg-buildqueue-enabled').checked = CONFIG.buildQueue.enabled;
         document.getElementById('cfg-buildqueue-recheck').value = CONFIG.buildQueue.recheckInterval;
+        document.getElementById('cfg-idle-enabled').checked = CONFIG.idle.enabled;
+        document.getElementById('cfg-idle-delay').value = CONFIG.idle.delay;
 
         renderPanicSelects();
         renderExpeditionsConfig();
@@ -3607,6 +3653,10 @@
             buildQueue: {
                 enabled: document.getElementById('cfg-buildqueue-enabled').checked,
                 recheckInterval: Math.max(60, parseInt(document.getElementById('cfg-buildqueue-recheck').value) || 60),
+            },
+            idle: {
+                enabled: document.getElementById('cfg-idle-enabled').checked,
+                delay: Math.max(5, parseInt(document.getElementById('cfg-idle-delay').value) || 60),
             }
         };
 
@@ -4474,6 +4524,16 @@
         if (!CONFIG.buildQueue.enabled) return;
         if (isActionInProgress()) return;
 
+        // Vous êtes en train de jouer : la file attend la fin de votre activité (ni navigation, ni détail ouvert)
+        if (!isUserIdle()) {
+            const anyDue = Object.values(loadBuildQueues()).some(q => q.items.length > 0 && (q.nextCheckAt || 0) <= Date.now());
+            if (anyDue && !idleRetryTimers.build) {
+                buildLog(`Activité en cours, file reportée de ${Math.round(getIdleRemaining() / 1000)} s`);
+                runWhenIdle('build', () => checkBuildQueues(false));
+            }
+            return;
+        }
+
         const queues = loadBuildQueues();
         const now = Date.now();
         const currentId = getCurrentPlanetId();
@@ -5046,6 +5106,73 @@
         }
     }
 
+    // ===== Inactivité : les actions automatiques attendent que l'humain ait fini =====
+
+    const ACTIVITY_KEY = 'ogame_plugin_last_activity';
+    let lastActivityWrite = 0;
+
+    // Seuls les événements réellement produits par l'utilisateur comptent (isTrusted) :
+    // les clics/touches simulés par le plugin ne remettent pas le compteur à zéro.
+    // Mémorisé en localStorage : un clic sur un lien compte aussi pour la page suivante.
+    function watchUserActivity() {
+        const onActivity = (e) => {
+            if (!e.isTrusted) return;
+            const now = Date.now();
+            if (now - lastActivityWrite < 1000) return;
+            lastActivityWrite = now;
+            try { localStorage.setItem(ACTIVITY_KEY, String(now)); } catch (err) {}
+        };
+        ['mousedown', 'keydown', 'wheel', 'touchstart', 'mousemove'].forEach(type => {
+            document.addEventListener(type, onActivity, { capture: true, passive: true });
+        });
+    }
+
+    // Millisecondes restantes avant que les actions automatiques puissent reprendre (0 = inactif)
+    function getIdleRemaining() {
+        if (!CONFIG.idle || !CONFIG.idle.enabled) return 0;
+        const last = parseInt(localStorage.getItem(ACTIVITY_KEY) || '0', 10) || 0;
+        return Math.max(0, last + (CONFIG.idle.delay || 60) * 1000 - Date.now());
+    }
+
+    function isUserIdle() {
+        return getIdleRemaining() === 0;
+    }
+
+    // Relance `fn` quand l'utilisateur sera inactif (un seul minuteur par clé)
+    const idleRetryTimers = {};
+    function runWhenIdle(key, fn) {
+        if (idleRetryTimers[key]) return;
+        const delay = getIdleRemaining() + 1000;
+        idleRetryTimers[key] = setTimeout(() => {
+            delete idleRetryTimers[key];
+            if (!isUserIdle()) {
+                runWhenIdle(key, fn);
+                return;
+            }
+            fn();
+        }, delay);
+    }
+
+    function renderIdleCard() {
+        let card = document.getElementById('ogame-plugin-idle');
+        const remaining = getIdleRemaining();
+        if (remaining === 0) {
+            if (card) card.remove();
+            return;
+        }
+        if (!card) {
+            card = document.createElement('div');
+            card.id = 'ogame-plugin-idle';
+            card.className = 'ogp-card';
+            card.title = 'Expéditions auto, files de construction et clic aléatoire attendent la fin de votre activité. Panic, repli et alertes ne sont jamais retardés.';
+            card.innerHTML = '<span class="idle-label">🖐️ Actions auto en pause</span><span class="idle-value"></span>';
+            // Juste sous la barre de boutons
+            const toolbar = document.getElementById('ogame-plugin-toolbar');
+            getDock().insertBefore(card, toolbar ? toolbar.nextSibling : null);
+        }
+        card.querySelector('.idle-value').textContent = `reprise dans ${formatDelay(remaining)}`;
+    }
+
     function scheduleNextClick() {
         if (!CONFIG.randomClickEnabled) {
             console.log('[Monitor] Clic aléatoire désactivé');
@@ -5064,7 +5191,7 @@
 
         startTimerDisplay();
 
-        setTimeout(() => {
+        const performClick = () => {
             if (!CONFIG.randomClickEnabled) {
                 console.log('[Monitor] Clic aléatoire désactivé, arrêt');
                 stopTimerDisplay();
@@ -5072,9 +5199,18 @@
             }
 
             checkAlerts();
+            // Vous êtes en train de jouer : pas de clic aléatoire, on attend la fin de votre activité
+            if (!isUserIdle()) {
+                const wait = getIdleRemaining() + 1000;
+                console.log(`[Monitor] Activité en cours, clic aléatoire reporté de ${Math.round(wait / 1000)}s`);
+                nextClickTime = Date.now() + wait;
+                setTimeout(performClick, wait);
+                return;
+            }
             clickRandomPlanet();
             scheduleNextClick();
-        }, delay);
+        };
+        setTimeout(performClick, delay);
     }
 
     function startExpeditionChecker() {
@@ -5109,6 +5245,8 @@
         // Mémorise les constructions visibles sur cette page (bâtiment et/ou formes de vie)
         recordConstructionInfoHere();
         rememberFleetTemplates();
+        watchUserActivity();
+        setInterval(renderIdleCard, 1000);
         watchPageResources();
         initBuildQueueUI();
 
