@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.15.0
+
+- File de construction **sans rechargement** quand on est déjà sur la bonne planète et la bonne page (ajout, retrait, déplacement, heure estimée atteinte, ressources reçues) : le panneau de détail OGame, rechargé à chaque ouverture, sert d'oracle — bouton « Développer » présent = on lance ; absent = coût lu, manque et heure estimée. Le bouton d'achat premium n'est jamais utilisé.
+- Le détail n'est ouvert que si c'est utile (l'estimation suffit quand il manque encore des ressources).
+- Rechargement conservé uniquement quand il est nécessaire : contrôle juste après un lancement, construction terminée mais encore affichée en cours (page figée), changement de planète/page.
+
 ## 1.14.2
 
 - Sauvegarde de la configuration : plus de popup « Configuration sauvegardée ! » ; le bouton ⚙️ affiche « ✅ Sauvegardé » pendant 2 s.

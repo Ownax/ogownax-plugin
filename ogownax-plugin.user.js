@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.14.2
+// @version      1.15.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3493,6 +3493,9 @@
         return meta ? parseInt(meta.getAttribute('content')) * 1000 - Date.now() : 0;
     })();
 
+    // Chargement de la page : tout ce qui s'est passé après (lancement…) n'est pas reflété par les tuiles
+    const PAGE_START_TIME = Date.now();
+
     function serverSecondsToLocalMs(seconds) {
         return seconds * 1000 - SERVER_OFFSET_MS;
     }
@@ -3962,32 +3965,44 @@
         return !!cost && cost.technologyId === item.technologyId && cost.level === item.targetLevel;
     }
 
-    // Coût exact (bonus compris) lu dans le panneau de détail OGame
-    async function readBuildingCost(tile, item) {
-        const selector = `#technologydetails[data-technology-id="${item.technologyId}"] .costs`;
+    // Ouvre le panneau de détail OGame d'un bâtiment (chargé à neuf par OGame à chaque ouverture).
+    // Retourne { element, opened } ou null s'il n'apparaît pas.
+    async function openTechnologyDetails(tile, technologyId) {
+        const selector = `#technologydetails[data-technology-id="${technologyId}"]`;
         const alreadyOpen = !!document.querySelector(selector);
-        try {
-            if (!alreadyOpen) {
-                (tile.querySelector('.icon') || tile).click();
-            }
-            const costs = await waitForElement(selector, 8000);
-            const levelMatch = (costs.querySelector('p')?.textContent || '').match(/(\d+)\s*:?\s*$/);
-            const level = levelMatch ? parseInt(levelMatch[1]) : item.targetLevel;
-            const cost = { technologyId: item.technologyId, level };
-            [...BUILD_RESOURCES, 'energy'].forEach(r => {
-                const li = costs.querySelector(`li.resource.${r}[data-value]`);
-                cost[r] = li ? parseInt(li.dataset.value) || 0 : 0;
-            });
-            buildLog(`Coût ${item.name} niv. ${level}:`, cost);
-            return level === item.targetLevel ? cost : null;
-        } catch (e) {
-            buildLog('Coût introuvable:', e.message);
-            return null;
-        } finally {
-            if (!alreadyOpen) {
-                document.querySelector('#technologydetails .close')?.click();
-            }
+        if (!alreadyOpen) {
+            // OGame ouvre le détail au clic sur l'icône (délégué sur `.technology.hasDetails:not(.showsDetails) .icon`)
+            (tile.querySelector('.icon') || tile).click();
         }
+        try {
+            const element = await waitForElement(selector, 8000);
+            // Laisse le contenu (coûts, boutons) se remplir
+            await waitForElement(`${selector} .costs, ${selector} button.upgrade, ${selector} .build-it_wrap`, 3000).catch(() => {});
+            return { element, opened: !alreadyOpen };
+        } catch (e) {
+            if (!alreadyOpen) closeTechnologyDetails();
+            return null;
+        }
+    }
+
+    function closeTechnologyDetails() {
+        document.querySelector('#technologydetails .close')?.click();
+    }
+
+    // Coût exact (bonus compris) affiché dans le détail ; null si le niveau ne correspond pas
+    function readCostFromDetails(element, item) {
+        const costs = element.querySelector('.costs');
+        if (!costs) return null;
+        const levelMatch = (costs.querySelector('p')?.textContent || '').match(/(\d+)\s*:?\s*$/);
+        const level = levelMatch ? parseInt(levelMatch[1]) : item.targetLevel;
+        const cost = { technologyId: item.technologyId, level };
+        [...BUILD_RESOURCES, 'energy'].forEach(r => {
+            const li = costs.querySelector(`li.resource.${r}[data-value]`);
+            cost[r] = li ? parseInt(li.dataset.value) || 0 : 0;
+        });
+        if (level !== item.targetLevel) return null;
+        buildLog(`Coût ${item.name} niv. ${level}:`, cost);
+        return cost;
     }
 
     // { missing: {metal, crystal, deuterium}, readyAt (ms, null si jamais), storageBlocked }
@@ -4115,21 +4130,6 @@
         if (changed) saveBuildQueues(queues);
     }
 
-    async function upgradeBuilding(tile, technologyId) {
-        // OGame ouvre le détail au clic sur l'icône (délégué sur `.technology.hasDetails:not(.showsDetails) .icon`)
-        const selector = `#technologydetails button.upgrade[data-technology="${technologyId}"]`;
-        if (!document.querySelector(selector)) {
-            (tile.querySelector('.icon') || tile).click();
-        }
-        // Uniquement le bouton du bon bâtiment : le détail d'un autre peut être déjà ouvert
-        const upgradeBtn = await waitForElement(selector, 8000);
-        if (upgradeBtn.disabled) {
-            throw new Error('Bouton Améliorer désactivé');
-        }
-        await wait(300);
-        upgradeBtn.click();
-    }
-
     // Traite la file `key` sur la page affichée (planète et page de la bonne file).
     // Retourne le composant à ouvrir si le prochain élément est sur une autre page.
     async function evaluateBuildQueueHere(key) {
@@ -4145,6 +4145,8 @@
         if (!queue || queue.items.length === 0) return null;
         // Réarmé seulement si cette vérification conclut à un manque de ressources
         queue.awaitingResources = false;
+        // Page chargée après le dernier lancement : elle reflète ce lancement
+        if (queue.reloadAfter && queue.reloadAfter < PAGE_START_TIME) delete queue.reloadAfter;
 
         // Retire les niveaux déjà atteints (lancés par le plugin ou à la main)
         const before = queue.items.length;
@@ -4208,69 +4210,118 @@
         }
 
         const recheckAt = Date.now() + (CONFIG.buildQueue.recheckInterval || 60) * 1000;
+        const tileReason = getTileReason(tile);
 
-        if (tile.dataset.status === 'on') {
-            try {
-                buildLog(`Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
-                queue.status = 'Lancement…';
-                queue.nextCheckAt = Date.now() + 10 * 1000;
-                // Le coût mémorisé est celui du bâtiment qu'on lance : sans ça, le rechargement des ressources
-                // qui suit la dépense ferait repousser le contrôle post-lancement (le bâtiment resterait dans la file)
-                queue.cost = null;
-                queue.readyAt = null;
-                queue.awaitingResources = false;
-                saveBuildQueues(queues);
-                await upgradeBuilding(tile, item.technologyId);
-                const icon = LANE_ICONS[lane];
-                notifyDiscord(`${icon} **${lane === 'research' ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
-            } catch (e) {
-                buildLog('Échec du lancement:', e);
-                const current = loadBuildQueues();
-                if (current[key]) {
-                    current[key].status = `Échec du lancement : ${e.message}`;
-                    current[key].nextCheckAt = recheckAt;
-                    saveBuildQueues(current);
-                }
-            }
+        if (tile.dataset.status === 'off') {
+            queue.status = tileReason || 'Prérequis manquants';
+            queue.nextCheckAt = recheckAt;
+            saveBuildQueues(queues);
+            buildLog(`${item.name} niv. ${item.targetLevel} non disponible (off): ${queue.status}`);
             renderBuildQueueUI();
             return null;
         }
 
-        const reason = getTileReason(tile);
-        queue.status = reason || (tile.dataset.status === 'off' ? 'Prérequis manquants' : 'Ressources insuffisantes');
-        queue.nextCheckAt = recheckAt;
-
-        // Manque de ressources : coût exact (lu une fois dans le détail OGame) + production → heure estimée
-        if (tile.dataset.status === 'disabled') {
-            if (!isCostForItem(queue.cost, item)) {
-                queue.cost = await readBuildingCost(tile, item);
-            }
+        // Le statut des tuiles n'est calculé qu'au chargement de la page. Si l'estimation (tenue à jour en continu)
+        // dit qu'il manque encore des ressources, inutile d'ouvrir le détail.
+        if (tile.dataset.status !== 'on' && isCostForItem(queue.cost, item)) {
             const estimate = estimateBuildReady(queue.cost);
-            if (estimate) {
-                queue.readyAt = estimate.readyAt;
-                if (estimate.storageBlocked) {
-                    queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
-                } else if (estimate.energyBlocked) {
-                    queue.status = 'Énergie insuffisante';
-                } else if (estimate.readyAt && estimate.readyAt > Date.now()) {
-                    queue.nextCheckAt = estimate.readyAt + 5000;
-                    // Si ces ressources arrivent plus tôt (récompense, flotte), refreshBuildEstimateHere vérifiera aussitôt
-                    queue.awaitingResources = true;
-                    buildLog(`${item.name} niv. ${item.targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)}`);
-                } else if (estimate.readyAt && /ressource/i.test(reason)) {
-                    // Mon calcul dit « prêt » mais OGame dit « pas assez » (quelques unités d'écart, dépense entre-temps…) :
-                    // c'est OGame qui a raison, on revient vite plutôt que d'attendre l'intervalle complet
-                    queue.nextCheckAt = Date.now() + 15 * 1000;
-                    buildLog(`${item.name} niv. ${item.targetLevel} : OGame indique encore « ${reason} » alors que le calcul donne les ressources disponibles, nouvel essai dans 15 s`);
-                }
-                // Sinon les ressources sont là mais OGame refuse pour une autre raison (usine en extension, chantier occupé…) :
-                // motif OGame affiché et revérification normale
+            if (estimate && (!estimate.readyAt || estimate.readyAt > Date.now() + 2000)) {
+                applyBuildUnavailable(queue, item, tileReason || 'Pas assez de ressources!', estimate, recheckAt);
+                saveBuildQueues(queues);
+                renderBuildQueueUI();
+                return null;
             }
         }
+
+        // Détail OGame : rechargé à chaque ouverture, il dit si on peut lancer maintenant (bouton « Développer »),
+        // sans avoir à recharger la page
+        const details = await openTechnologyDetails(tile, item.technologyId);
+        try {
+            if (!details) {
+                queue.status = 'Détail du bâtiment introuvable';
+                queue.nextCheckAt = recheckAt;
+                buildLog(`${item.name} niv. ${item.targetLevel} : détail introuvable, nouvel essai plus tard`);
+            } else {
+                const cost = readCostFromDetails(details.element, item);
+                if (cost) queue.cost = cost;
+                const upgradeBtn = details.element.querySelector(`button.upgrade[data-technology="${item.technologyId}"]`);
+
+                if (upgradeBtn && !upgradeBtn.disabled) {
+                    buildLog(`Lancement ${item.name} niv. ${item.targetLevel} sur ${body.coords}`);
+                    queue.status = 'Lancement…';
+                    queue.nextCheckAt = Date.now() + 10 * 1000;
+                    // Le contrôle post-lancement se fait sur une page rechargée (tuiles et cadre à jour)
+                    queue.reloadAfter = Date.now();
+                    // Le coût mémorisé est celui du bâtiment qu'on lance : sans ça, le rechargement des ressources
+                    // qui suit la dépense ferait repousser le contrôle post-lancement (le bâtiment resterait dans la file)
+                    queue.cost = null;
+                    queue.readyAt = null;
+                    queue.awaitingResources = false;
+                    saveBuildQueues(queues);
+                    await wait(300);
+                    upgradeBtn.click();
+                    const icon = LANE_ICONS[lane];
+                    notifyDiscord(`${icon} **${lane === 'research' ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
+                    renderBuildQueueUI();
+                    return null;
+                }
+
+                // Pas de bouton « Développer » : OGame refuse pour l'instant (ressources, ou autre raison)
+                const insufficient = details.element.querySelector('.costs li.insufficient');
+                const reason = (tile.dataset.status === 'disabled' && tileReason)
+                    ? tileReason
+                    : (insufficient ? 'Pas assez de ressources!' : 'Indisponible pour le moment');
+                const estimate = isCostForItem(queue.cost, item) ? estimateBuildReady(queue.cost) : null;
+                applyBuildUnavailable(queue, item, reason, estimate, recheckAt);
+            }
+        } catch (e) {
+            buildLog('Échec du lancement:', e);
+            queue.status = `Échec du lancement : ${e.message}`;
+            queue.nextCheckAt = recheckAt;
+        } finally {
+            if (details && details.opened) closeTechnologyDetails();
+        }
         saveBuildQueues(queues);
-        buildLog(`${item.name} niv. ${item.targetLevel} non disponible (${tile.dataset.status}): ${queue.status}`);
         renderBuildQueueUI();
         return null;
+    }
+
+    // Statut et prochaine vérification quand le prochain élément ne peut pas être lancé
+    function applyBuildUnavailable(queue, item, reason, estimate, recheckAt) {
+        queue.status = reason;
+        queue.nextCheckAt = recheckAt;
+        if (estimate) {
+            queue.readyAt = estimate.readyAt;
+            if (estimate.storageBlocked) {
+                queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
+            } else if (estimate.energyBlocked) {
+                queue.status = 'Énergie insuffisante';
+            } else if (estimate.readyAt && estimate.readyAt > Date.now()) {
+                queue.nextCheckAt = estimate.readyAt + 5000;
+                // Si ces ressources arrivent plus tôt (récompense, flotte), refreshBuildEstimateHere vérifiera aussitôt
+                queue.awaitingResources = true;
+                buildLog(`${item.name} niv. ${item.targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)}`);
+            } else if (estimate.readyAt && /ressource/i.test(reason)) {
+                // Le calcul dit « prêt » mais OGame dit « pas assez » (quelques unités d'écart, dépense entre-temps…) :
+                // c'est OGame qui a raison, on revient vite plutôt que d'attendre l'intervalle complet
+                queue.nextCheckAt = Date.now() + 15 * 1000;
+                buildLog(`${item.name} niv. ${item.targetLevel} : OGame indique encore « ${reason} » alors que le calcul donne les ressources disponibles, nouvel essai dans 15 s`);
+            }
+            // Sinon les ressources sont là mais OGame refuse pour une autre raison (usine en extension, chantier occupé…) :
+            // motif OGame affiché et revérification normale
+        }
+        buildLog(`${item.name} niv. ${item.targetLevel} non disponible : ${queue.status}`);
+    }
+
+    // La page affichée suffit-elle pour décider ? Non si :
+    // - un lancement a eu lieu depuis son chargement (le contrôle post-lancement se fait sur une page rechargée) ;
+    // - son cadre affiche une construction dont la fin est passée (tuiles et cadre figés depuis).
+    function canEvaluateInPlace(queue, lane) {
+        if (queue.reloadAfter && queue.reloadAfter >= PAGE_START_TIME) return false;
+        const box = document.querySelector(BUILD_LANES[lane].box);
+        const countdown = box && box.querySelector('[data-end]');
+        if (countdown && serverSecondsToLocalMs(parseInt(countdown.dataset.end)) <= Date.now() + 2000) return false;
+        return true;
     }
 
     function navigateToBuildPage(key, component) {
@@ -4323,7 +4374,10 @@
         const key = due[0];
         const firstItem = queues[key].items[0];
 
-        if (freshPage && getQueuePlanetId(key) === currentId && getQueueLane(key) === currentLane) {
+        // Sur la bonne planète et la bonne page : évaluation sur place, sans recharger (le détail OGame fait foi),
+        // sauf si la page est périmée (voir canEvaluateInPlace)
+        if (getQueuePlanetId(key) === currentId && getQueueLane(key) === currentLane
+            && (freshPage || canEvaluateInPlace(queues[key], currentLane))) {
             const neededComponent = await evaluateBuildQueueHere(key);
             if (neededComponent) navigateToBuildPage(key, neededComponent);
             return;
