@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.15.0
+// @version      1.15.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -4500,9 +4500,30 @@
                 padding: 8px 10px;
             }
             #ogame-plugin-buildqueue .bq-title {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
                 color: #6fcfff;
                 font-weight: bold;
                 margin-bottom: 4px;
+            }
+            #ogame-plugin-buildqueue .bq-clear {
+                padding: 1px 6px;
+                background: rgba(90, 29, 29, 0.6);
+                border: 1px solid #6a3c3c;
+                border-radius: 4px;
+                color: #ffb0b0;
+                font-family: inherit;
+                font-size: 10px;
+                cursor: pointer;
+            }
+            #ogame-plugin-buildqueue .bq-clear:hover {
+                filter: brightness(1.3);
+            }
+            #ogame-plugin-buildqueue .bq-clear.armed {
+                background: #8a2c2c;
+                color: #fff;
+                border-color: #cf6f6f;
             }
             #ogame-plugin-buildqueue .bq-title:not(:first-child) {
                 margin-top: 10px;
@@ -4637,6 +4658,22 @@
                 const index = parseInt(btn.dataset.index);
                 if (btn.dataset.action === 'remove') removeFromBuildQueue(btn.dataset.key, index);
                 if (btn.dataset.action === 'up') moveUpInBuildQueue(btn.dataset.key, index);
+                if (btn.dataset.action === 'clear') {
+                    // Confirmation dans la page (pas de popup) : 1er clic arme, 2e clic dans les 3 s vide
+                    if (btn.dataset.armed) {
+                        buildLog(`${getLaneLabel(getQueueLane(btn.dataset.key))} vidée`);
+                        clearBuildQueue(btn.dataset.key);
+                    } else {
+                        btn.dataset.armed = '1';
+                        btn.textContent = 'Confirmer ?';
+                        btn.classList.add('armed');
+                        setTimeout(() => {
+                            delete btn.dataset.armed;
+                            btn.textContent = '🗑️ Vider';
+                            btn.classList.remove('armed');
+                        }, 3000);
+                    }
+                }
             });
             // Sous la barre de boutons, au-dessus de la carte « Prochain clic »
             getDock().insertBefore(panel, document.getElementById('ogame-plugin-timer'));
@@ -4648,7 +4685,7 @@
         const dynamic = [];
         laneKeys.forEach(({ lane, key }) => {
             const queue = queues[key];
-            html += `<div class="bq-title">${BUILD_LANES[lane].title} (${queue.items.length})</div>`;
+            html += `<div class="bq-title"><span>${BUILD_LANES[lane].title} (${queue.items.length})</span><button class="bq-clear" data-action="clear" data-key="${key}" title="Vider toute la file">🗑️ Vider</button></div>`;
             if (!CONFIG.buildQueue.enabled) {
                 html += `<div class="bq-status">⏸️ Lancement automatique désactivé</div>`;
             } else {

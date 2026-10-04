@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.15.1
+
+- Panneau de file : bouton « 🗑️ Vider » sur chaque section (bâtiments, formes de vie, recherche). Confirmation dans la page : 1er clic → « Confirmer ? », 2e clic dans les 3 s → file vidée.
+
 ## 1.15.0
 
 - File de construction **sans rechargement** quand on est déjà sur la bonne planète et la bonne page (ajout, retrait, déplacement, heure estimée atteinte, ressources reçues) : le panneau de détail OGame, rechargé à chaque ouverture, sert d'oracle — bouton « Développer » présent = on lance ; absent = coût lu, manque et heure estimée. Le bouton d'achat premium n'est jamais utilisé.
