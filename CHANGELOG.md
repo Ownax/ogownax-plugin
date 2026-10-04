@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.16.0
+
+- Expéditions : deux modes de composition dans ⚙️ → Expéditions :
+  - **Touche L / S** (raccourci OGame, comme avant) ;
+  - **Flotte d'expédition enregistrée** : le script sélectionne la flotte choisie dans la liste « Flotte d'expédition » de la page Flotte, clique sur Continuer, règle la destination en position 16 et la mission Expédition, puis envoie.
+- La liste des flottes enregistrées est mémorisée à chaque passage sur la page Flotte et proposée dans ⚙️.
+- Flotte enregistrée introuvable ou sans vaisseau disponible : lancement annulé avec message et notification Discord (rien n'est envoyé).
+
 ## 1.15.1
 
 - Panneau de file : bouton « 🗑️ Vider » sur chaque section (bâtiments, formes de vie, recherche). Confirmation dans la page : 1er clic → « Confirmer ? », 2e clic dans les 3 s → file vidée.

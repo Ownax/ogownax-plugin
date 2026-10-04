@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.15.1
+// @version      1.16.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -36,6 +36,9 @@
         expeditionCheckInterval: 60 * 1000,
         // Raccourci OGame appuyé sur la page Flotte pour composer l'expédition
         expeditionKey: 'l',
+        // 'key' : touche L/S ; 'template' : flotte d'expédition enregistrée (nom ci-dessous)
+        expeditionMode: 'key',
+        expeditionTemplate: '',
         expeditionStartHour: null,
         expeditionEndHour: null,
         randomClickEnabled: true,
@@ -1592,6 +1595,70 @@
         return new Promise(resolve => setTimeout(resolve, ms));
     }
 
+    const FLEET_TEMPLATES_KEY = 'ogame_plugin_fleet_templates';
+
+    // Mémorise les noms des flottes d'expédition enregistrées (liste du panneau ⚙️ → Expéditions)
+    function rememberFleetTemplates() {
+        const select = document.getElementById('expeditionFleetTemplateSelect');
+        if (!select) return;
+        const names = [...select.options]
+            .filter(o => o.value && o.value !== '0')
+            .map(o => o.textContent.trim())
+            .filter(Boolean);
+        localStorage.setItem(FLEET_TEMPLATES_KEY, JSON.stringify(names));
+    }
+
+    function loadFleetTemplates() {
+        try {
+            return JSON.parse(localStorage.getItem(FLEET_TEMPLATES_KEY)) || [];
+        } catch (e) {
+            return [];
+        }
+    }
+
+    // Page Flotte, étape 1 : sélectionne la flotte d'expédition enregistrée `name` (liste « Flotte d'expédition »)
+    async function selectExpeditionFleetTemplate(name) {
+        if (!name) throw new Error('aucune flotte enregistrée choisie (⚙️ → Expéditions)');
+        const select = await waitForElement('#expeditionFleetTemplateSelect', 5000);
+        const wanted = name.trim().toLowerCase();
+        const option = [...select.options].find(o => o.value !== '0' && o.textContent.trim().toLowerCase() === wanted);
+        if (!option) throw new Error(`flotte enregistrée « ${name} » introuvable`);
+
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        await wait(800);
+
+        // Repli : fonction OGame appelée par le lien de la liste des flottes d'expédition
+        if (!document.querySelector('#continueToFleet2.on')) {
+            const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            if (typeof page.selectShipsPerFleet === 'function') {
+                page.selectShipsPerFleet(String(option.value));
+                await wait(800);
+            }
+        }
+        if (!document.querySelector('#continueToFleet2.on')) {
+            throw new Error(`« ${name} » : aucun vaisseau sélectionné (vaisseaux absents sur cette planète ?)`);
+        }
+        return option.textContent.trim();
+    }
+
+    // Page Flotte, étape 2 : destination position 16 du système courant, puis mission Expédition
+    async function setExpeditionTarget() {
+        const position = await waitForElement('#position', 5000);
+        if (position.value !== '16') {
+            position.value = '16';
+            ['input', 'change', 'keyup'].forEach(type => {
+                const event = type === 'keyup' ? new KeyboardEvent('keyup', { bubbles: true }) : new Event(type, { bubbles: true });
+                position.dispatchEvent(event);
+            });
+        }
+        const missionLi = await waitForElement('#button15.on', 5000)
+            .catch(() => { throw new Error('mission Expédition indisponible (position 16)'); });
+        await wait(300);
+        (missionLi.querySelector('#missionButton15') || missionLi).click();
+        await wait(500);
+    }
+
     function pressKey(key) {
         const event = new KeyboardEvent('keydown', {
             key: key,
@@ -1910,10 +1977,23 @@
 
             case 'go_to_fleet':
                 if (currentPage === 'fleetdispatch') {
-                    const expeditionKey = CONFIG.expeditionKey === 's' ? 's' : 'l';
-                    console.log(`[Monitor] Sur la page flotte, appui sur ${expeditionKey.toUpperCase()}`);
                     await wait(1000);
-                    pressKey(expeditionKey);
+                    if (CONFIG.expeditionMode === 'template') {
+                        try {
+                            const template = await selectExpeditionFleetTemplate(CONFIG.expeditionTemplate);
+                            console.log(`[Monitor] Flotte enregistrée « ${template} » sélectionnée`);
+                        } catch (e) {
+                            console.log('[Monitor] Flotte enregistrée non sélectionnée:', e.message);
+                            showLaunchStatus(`Erreur: ${e.message}`, true);
+                            notifyDiscord(`⚠️ **Expédition annulée** : ${e.message}`);
+                            clearLaunchState();
+                            break;
+                        }
+                    } else {
+                        const expeditionKey = CONFIG.expeditionKey === 's' ? 's' : 'l';
+                        console.log(`[Monitor] Sur la page flotte, appui sur ${expeditionKey.toUpperCase()}`);
+                        pressKey(expeditionKey);
+                    }
                     saveLaunchState({ ...state, step: 'press_continue' });
                     await wait(500);
                     processLaunchState();
@@ -1928,12 +2008,27 @@
                     console.log('[Monitor] Clic sur Continuer');
                     await wait(500);
                     continueBtn.click();
-                    saveLaunchState({ ...state, step: 'send_fleet' });
+                    // Une flotte enregistrée ne contient que les vaisseaux : destination (position 16) et mission à régler
+                    saveLaunchState({ ...state, step: CONFIG.expeditionMode === 'template' ? 'set_expedition_target' : 'send_fleet' });
                     await wait(1000);
                     processLaunchState();
                 } catch (e) {
                     console.log('[Monitor] Bouton Continuer non disponible, annulation');
                     showLaunchStatus('Erreur: bouton Continuer non disponible', true);
+                    clearLaunchState();
+                }
+                break;
+
+            case 'set_expedition_target':
+                try {
+                    await setExpeditionTarget();
+                    console.log('[Monitor] Destination position 16 et mission Expédition réglées');
+                    saveLaunchState({ ...state, step: 'send_fleet' });
+                    await wait(800);
+                    processLaunchState();
+                } catch (e) {
+                    console.log('[Monitor] Mission Expédition non disponible:', e.message);
+                    showLaunchStatus(`Erreur: ${e.message}`, true);
                     clearLaunchState();
                 }
                 break;
@@ -2842,12 +2937,26 @@
                 </div>
 
                 <div class="config-group">
+                    <label>Composition de la flotte</label>
+                    <select id="cfg-expedition-mode">
+                        <option value="key">Touche L / S (raccourci OGame)</option>
+                        <option value="template">Flotte d'expédition enregistrée</option>
+                    </select>
+                </div>
+
+                <div class="config-group" id="cfg-expedition-key-group">
                     <label>Touche de lancement</label>
                     <select id="cfg-expedition-key" style="width: 80px;">
                         <option value="l">L</option>
                         <option value="s">S</option>
                     </select>
                     <div class="hint">Raccourci OGame appuyé sur la page Flotte pour composer l'expédition</div>
+                </div>
+
+                <div class="config-group" id="cfg-expedition-template-group">
+                    <label>Flotte enregistrée</label>
+                    <select id="cfg-expedition-template"></select>
+                    <div class="hint">Liste « Flotte d'expédition » de la page Flotte, mise à jour à chaque passage sur cette page. Le script la sélectionne, clique sur Continuer, règle la position 16 et la mission Expédition, puis envoie.</div>
                 </div>
 
                 <div class="config-group">
@@ -3040,6 +3149,7 @@
         });
         document.getElementById('cfg-launch-expeditions').addEventListener('click', launchMissingExpeditions);
         document.getElementById('cfg-buildqueue-log-refresh').addEventListener('click', renderBuildLog);
+        document.getElementById('cfg-expedition-mode').addEventListener('change', updateExpeditionModeVisibility);
     }
 
     function updateWebhookIndicator() {
@@ -3344,12 +3454,38 @@
             : '✅ Toutes les expéditions sont lancées';
     }
 
+    // Liste des flottes enregistrées vues sur la page Flotte (+ celle configurée si elle n'y est plus)
+    function renderExpeditionTemplateOptions() {
+        const select = document.getElementById('cfg-expedition-template');
+        if (!select) return;
+        const names = loadFleetTemplates();
+        if (CONFIG.expeditionTemplate && !names.includes(CONFIG.expeditionTemplate)) {
+            names.push(CONFIG.expeditionTemplate);
+        }
+        const escape = s => s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        select.innerHTML = names.length === 0
+            ? '<option value="">— Ouvrez la page Flotte pour charger la liste —</option>'
+            : names.map(n => `<option value="${escape(n)}">${escape(n)}</option>`).join('');
+        if (CONFIG.expeditionTemplate) select.value = CONFIG.expeditionTemplate;
+    }
+
+    function updateExpeditionModeVisibility() {
+        const mode = document.getElementById('cfg-expedition-mode')?.value;
+        const keyGroup = document.getElementById('cfg-expedition-key-group');
+        const templateGroup = document.getElementById('cfg-expedition-template-group');
+        if (keyGroup) keyGroup.style.display = mode === 'template' ? 'none' : '';
+        if (templateGroup) templateGroup.style.display = mode === 'template' ? '' : 'none';
+    }
+
     function loadFormValues() {
         document.getElementById('cfg-alert-attack').checked = CONFIG.alertAttack;
         document.getElementById('cfg-alert-espionage').checked = CONFIG.alertEspionage;
         document.getElementById('cfg-webhook').value = CONFIG.discordWebhook;
         document.getElementById('cfg-auto-launch').checked = CONFIG.autoLaunchExpeditions;
         document.getElementById('cfg-expedition-key').value = CONFIG.expeditionKey === 's' ? 's' : 'l';
+        document.getElementById('cfg-expedition-mode').value = CONFIG.expeditionMode === 'template' ? 'template' : 'key';
+        renderExpeditionTemplateOptions();
+        updateExpeditionModeVisibility();
         document.getElementById('cfg-expedition-start-hour').value = CONFIG.expeditionStartHour !== null ? CONFIG.expeditionStartHour : '';
         document.getElementById('cfg-expedition-end-hour').value = CONFIG.expeditionEndHour !== null ? CONFIG.expeditionEndHour : '';
         document.getElementById('cfg-expedition-check-interval').value = CONFIG.expeditionCheckInterval / 1000;
@@ -3438,6 +3574,8 @@
             expeditionsPerBody,
             autoLaunchExpeditions: document.getElementById('cfg-auto-launch').checked,
             expeditionKey: document.getElementById('cfg-expedition-key').value === 's' ? 's' : 'l',
+            expeditionMode: document.getElementById('cfg-expedition-mode').value === 'template' ? 'template' : 'key',
+            expeditionTemplate: document.getElementById('cfg-expedition-template').value || '',
             expeditionStartHour,
             expeditionEndHour,
             expeditionCheckInterval: (parseInt(document.getElementById('cfg-expedition-check-interval').value) || 60) * 1000,
@@ -4970,6 +5108,7 @@
         createConfigPanel();
         // Mémorise les constructions visibles sur cette page (bâtiment et/ou formes de vie)
         recordConstructionInfoHere();
+        rememberFleetTemplates();
         watchPageResources();
         initBuildQueueUI();
 
