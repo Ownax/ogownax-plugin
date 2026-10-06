@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.18.0
+// @version      1.18.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -2686,6 +2686,13 @@
             #ogame-plugin-panel .stats-table td b {
                 color: #9fffaf;
             }
+            #ogame-plugin-panel .stats-over {
+                color: #ff8f8f;
+                font-weight: bold;
+            }
+            #ogame-plugin-panel .stats-ok {
+                color: #9fffaf;
+            }
             #ogame-plugin-panel .stats-slots {
                 margin-bottom: 8px;
             }
@@ -5295,20 +5302,6 @@
         }
     }
 
-    // Nombre d'expéditions possibles avec `ships` pour la composition `template`, et le vaisseau qui limite
-    function simulateExpeditions(ships, template) {
-        let count = Infinity;
-        let limiting = null;
-        Object.entries(template.ships).forEach(([id, need]) => {
-            const possible = Math.floor((ships[id] || 0) / need);
-            if (possible < count) {
-                count = possible;
-                limiting = id;
-            }
-        });
-        return { count: Number.isFinite(count) ? count : 0, limiting };
-    }
-
     function formatAgo(time) {
         const s = Math.max(0, Math.round((Date.now() - time) / 1000));
         if (s < 60) return `${s} s`;
@@ -5358,27 +5351,33 @@
             html += `<div class="hint">${returns.length} flotte(s) en retour vers cette ${body.type === 'moon' ? 'lune' : 'planète'}${nextArrival ? ` · prochain retour ${formatClock(nextArrival)} (dans ${formatDelay(nextArrival - now)})` : ''}</div>`;
         }
 
-        // Créneaux et simulation
-        html += '<div class="section-title">🚀 Expéditions possibles</div>';
-        if (stats.maxExpeditionCount !== null && stats.maxExpeditionCount !== undefined) {
-            const free = Math.max(0, stats.maxExpeditionCount - (stats.expeditionCount || 0));
-            html += `<div class="stats-slots">Créneaux d'expédition : <b>${stats.expeditionCount || 0} / ${stats.maxExpeditionCount}</b> utilisés · <b>${free}</b> libre(s)${stats.maxFleetCount ? ` · flottes ${stats.fleetCount || 0} / ${stats.maxFleetCount}` : ''}</div>`;
-        }
-        if (!stats.templates || stats.templates.length === 0) {
-            html += '<div class="hint">Aucune flotte d\'expédition enregistrée (liste « Flotte d\'expédition » de la page Flotte).</div>';
+        // Répartition : total (à quai + en retour) ÷ nombre maximum d'expéditions = composition d'une expédition
+        html += '<div class="section-title">🚀 Répartition par expédition</div>';
+        const maxExp = stats.maxExpeditionCount || 0;
+        if (!maxExp) {
+            html += '<div class="hint">Nombre maximum d\'expéditions inconnu (ouvrez la page Flotte puis 🔄).</div>';
+        } else if (ids.length === 0) {
+            html += '<div class="hint">Aucun vaisseau à répartir.</div>';
         } else {
-            stats.templates.forEach(t => {
-                const docked = simulateExpeditions(stats.ships, t);
-                const all = simulateExpeditions(total, t);
-                const composition = Object.entries(t.ships).map(([id, n]) => `${n} ${SHIP_NAMES[id] || `#${id}`}`).join(', ');
-                const limit = all.limiting ? ` · limité par : ${SHIP_NAMES[all.limiting] || `#${all.limiting}`}` : '';
-                html += `
-                    <div class="stats-template">
-                        <div><b>${t.name}</b> <span class="hint">(${composition})</span></div>
-                        <div>À quai : <b>${docked.count}</b> expédition(s) · avec les retours : <b>${all.count}</b>${limit}</div>
-                    </div>
-                `;
+            const templates = stats.templates || [];
+            html += `<div class="stats-slots">Total ÷ <b>${maxExp}</b> expédition(s) max (en cours : ${stats.expeditionCount || 0})</div>`;
+            html += `<table class="stats-table"><tr><th>Vaisseau</th><th>Total</th><th>÷ ${maxExp} par expé</th><th>Reste</th>${templates.map(t => `<th>${t.name}</th>`).join('')}</tr>`;
+            const shipIds = [...new Set([...ids, ...templates.flatMap(t => Object.keys(t.ships).map(Number))])].sort((a, b) => a - b);
+            shipIds.forEach(id => {
+                const perExp = Math.floor((total[id] || 0) / maxExp);
+                const rest = (total[id] || 0) - perExp * maxExp;
+                const cells = templates.map(t => {
+                    const want = t.ships[id] || 0;
+                    if (!want) return '<td>–</td>';
+                    // Plus que la répartition : impossible de remplir tous les créneaux avec cette flotte
+                    return `<td class="${want > perExp ? 'stats-over' : 'stats-ok'}">${fmt(want)}</td>`;
+                }).join('');
+                html += `<tr><td>${SHIP_NAMES[id] || `#${id}`}</td><td>${fmt(total[id])}</td><td><b>${fmt(perExp)}</b></td><td>${rest ? fmt(rest) : '–'}</td>${cells}</tr>`;
             });
+            html += '</table>';
+            if (templates.length > 0) {
+                html += `<div class="hint">Flotte enregistrée en <span class="stats-over">rouge</span> : elle demande plus que la répartition, les ${maxExp} expéditions ne pourront pas toutes partir ; en <span class="stats-ok">vert</span> : OK.</div>`;
+            }
         }
         container.innerHTML = html;
     }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.18.1
+
+- Onglet 📊 Stats : « Expéditions possibles » remplacé par une **répartition par expédition** — pour chaque vaisseau, total (à quai + en retour) ÷ nombre maximum d'expéditions, reste, et comparaison avec chaque flotte d'expédition enregistrée (rouge si elle demande plus que la répartition, vert sinon). Sert à dimensionner la flotte préconfigurée.
+
 ## 1.18.0
 
 - **Onglet 📊 Stats** (⚙️) : flotte disponible sur la planète/lune affichée — par vaisseau : à quai, en retour, total.
