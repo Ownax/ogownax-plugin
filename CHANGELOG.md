@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.0
+
+- **Onglet 📊 Stats** (⚙️) : flotte disponible sur la planète/lune affichée — par vaisseau : à quai, en retour, total.
+  - À quai : données de la page Flotte (`shipsOnPlanet`), récupérée en arrière-plan à l'ouverture de l'onglet (🔄 pour actualiser).
+  - En retour : lignes « retour » de vos propres flottes parties de cette planète/lune, lues dans la liste des mouvements (Vue d'ensemble, etc.) ; les flottes déjà arrivées au moment du relevé ne sont pas comptées deux fois ; heure du prochain retour.
+- **Simulation d'expéditions** : pour chaque flotte d'expédition enregistrée, nombre d'expéditions possibles avec les vaisseaux à quai et en comptant les retours, vaisseau limitant, créneaux d'expédition utilisés / libres.
+
 ## 1.17.0
 
 - **Pause pendant que vous jouez** (⚙️ → Général, activée par défaut, 60 s) : le lancement auto des expéditions, les files de construction (bâtiments, formes de vie, recherche) et le clic aléatoire attendent X secondes sans activité (souris, clavier, molette, navigation) avant de démarrer.

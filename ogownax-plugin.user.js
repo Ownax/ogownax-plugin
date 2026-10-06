@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.17.0
+// @version      1.18.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -2656,6 +2656,49 @@
             #ogame-plugin-panel .cfg-tab > .section-title:first-child {
                 margin-top: 0;
             }
+            #ogame-plugin-panel .stats-body {
+                color: #6fcfff;
+                font-weight: bold;
+                font-size: 12px;
+                margin-bottom: 2px;
+            }
+            #ogame-plugin-panel .stats-table {
+                width: 100%;
+                margin: 8px 0 4px;
+                border-collapse: collapse;
+            }
+            #ogame-plugin-panel .stats-table th {
+                color: #6a9aaa;
+                font-weight: normal;
+                text-align: right;
+                padding: 3px 6px;
+                border-bottom: 1px solid #2c4a5a;
+            }
+            #ogame-plugin-panel .stats-table th:first-child,
+            #ogame-plugin-panel .stats-table td:first-child {
+                text-align: left;
+            }
+            #ogame-plugin-panel .stats-table td {
+                text-align: right;
+                padding: 3px 6px;
+                border-bottom: 1px solid #13283a;
+            }
+            #ogame-plugin-panel .stats-table td b {
+                color: #9fffaf;
+            }
+            #ogame-plugin-panel .stats-slots {
+                margin-bottom: 8px;
+            }
+            #ogame-plugin-panel .stats-template {
+                padding: 6px 8px;
+                margin-bottom: 4px;
+                background: #0a1520;
+                border: 1px solid #2c4a5a;
+                border-radius: 4px;
+            }
+            #ogame-plugin-panel .stats-template b {
+                color: #9fffaf;
+            }
             #ogame-plugin-panel .bq-log {
                 max-height: 200px;
                 overflow-y: auto;
@@ -2874,6 +2917,7 @@
                 <button data-tab="expeditions">🚀 Expéditions</button>
                 <button data-tab="build">🏗️ Construction</button>
                 <button data-tab="alerts">🔔 Alertes</button>
+                <button data-tab="stats">📊 Stats</button>
                 <button data-tab="general">⚙️ Général</button>
             </div>
 
@@ -3074,6 +3118,14 @@
                 </div>
             </div>
 
+            <div class="cfg-tab" data-tab="stats">
+                <div class="section-title">
+                    📊 Flotte disponible
+                    <button class="refresh-btn" id="cfg-stats-refresh" title="Actualiser">🔄</button>
+                </div>
+                <div id="cfg-stats-container"></div>
+            </div>
+
             <div class="cfg-tab" data-tab="general">
                 <div class="section-title">🔁 Cycle de vérification</div>
 
@@ -3140,6 +3192,7 @@
         const showConfigTab = (name) => {
             panel.querySelectorAll('[data-tab]').forEach(el => el.classList.toggle('active', el.dataset.tab === name));
             try { localStorage.setItem('ogame_plugin_config_tab', name); } catch (e) {}
+            if (name === 'stats' && panel.style.display === 'block') refreshFleetStats();
         };
         panel.querySelectorAll('.cfg-tabs button').forEach(btn => {
             btn.addEventListener('click', () => showConfigTab(btn.dataset.tab));
@@ -3194,6 +3247,7 @@
         document.getElementById('cfg-launch-expeditions').addEventListener('click', launchMissingExpeditions);
         document.getElementById('cfg-buildqueue-log-refresh').addEventListener('click', renderBuildLog);
         document.getElementById('cfg-expedition-mode').addEventListener('change', updateExpeditionModeVisibility);
+        document.getElementById('cfg-stats-refresh').addEventListener('click', refreshFleetStats);
     }
 
     function updateWebhookIndicator() {
@@ -3559,6 +3613,9 @@
         renderFleeDestinations();
         renderBuildQueueConfig();
         renderBuildLog();
+        if (document.querySelector('#ogame-plugin-panel .cfg-tab.active')?.dataset.tab === 'stats') {
+            refreshFleetStats();
+        }
     }
 
     function saveFormValues() {
@@ -5106,6 +5163,226 @@
         }
     }
 
+    // ===== Statistiques : flotte disponible par planète/lune =====
+
+    const SHIP_NAMES = {
+        202: 'Petit transporteur', 203: 'Grand transporteur', 204: 'Chasseur léger', 205: 'Chasseur lourd',
+        206: 'Croiseur', 207: 'Vaisseau de bataille', 208: 'Vaisseau de colonisation', 209: 'Recycleur',
+        210: 'Sonde d\'espionnage', 211: 'Bombardier', 212: 'Satellite solaire', 213: 'Destructeur',
+        214: 'Étoile de la mort', 215: 'Traqueur', 217: 'Foreuse', 218: 'Faucheur', 219: 'Éclaireur',
+    };
+    const FLEET_STATS_KEY = 'ogame_plugin_fleet_stats';
+    const FLEET_RETURNS_KEY = 'ogame_plugin_fleet_returns';
+
+    function normalizeShipName(name) {
+        return String(name).toLowerCase().replace(/[`’´]/g, '\'').replace(/\s+/g, ' ').trim();
+    }
+    const SHIP_IDS_BY_NAME = Object.fromEntries(Object.entries(SHIP_NAMES).map(([id, name]) => [normalizeShipName(name), parseInt(id)]));
+
+    function loadJson(key, fallback) {
+        try {
+            return JSON.parse(localStorage.getItem(key)) || fallback;
+        } catch (e) {
+            return fallback;
+        }
+    }
+
+    // Données de la page Flotte (variables JS de la page) : vaisseaux à quai, créneaux, flottes d'expédition
+    function parseFleetDispatchData(text) {
+        const json = (name) => {
+            const m = text.match(new RegExp(`var ${name}\\s*=\\s*(\\[[\\s\\S]*?\\]);\\s*\\n`));
+            if (!m) return null;
+            try { return JSON.parse(m[1]); } catch (e) { return null; }
+        };
+        const number = (name) => {
+            const m = text.match(new RegExp(`var ${name}\\s*=\\s*(\\d+)`));
+            return m ? parseInt(m[1]) : null;
+        };
+        const shipsOnPlanet = json('shipsOnPlanet');
+        if (!shipsOnPlanet) return null;
+        const ships = {};
+        shipsOnPlanet.forEach(s => { if (s && s.number > 0) ships[s.id] = s.number; });
+        const templates = (json('expeditionFleetTemplates') || [])
+            .filter(t => t && t.name && t.ships)
+            .map(t => ({ name: t.name, ships: Object.fromEntries(Object.entries(t.ships).filter(([, n]) => n > 0).map(([id, n]) => [id, n])) }));
+        return {
+            ships,
+            templates,
+            expeditionCount: number('expeditionCount'),
+            maxExpeditionCount: number('maxExpeditionCount'),
+            fleetCount: number('fleetCount'),
+            maxFleetCount: number('maxFleetCount'),
+        };
+    }
+
+    function saveFleetStats(planetId, data, at = Date.now()) {
+        const all = loadJson(FLEET_STATS_KEY, {});
+        all[planetId] = { ...data, at };
+        localStorage.setItem(FLEET_STATS_KEY, JSON.stringify(all));
+    }
+
+    // Sur la page Flotte, les données sont déjà là
+    function recordFleetStatsHere() {
+        if (getCurrentPage() !== 'fleetdispatch') return;
+        const text = [...document.scripts].map(s => s.textContent).filter(t => t.includes('shipsOnPlanet')).join('\n');
+        const data = text && parseFleetDispatchData(text);
+        if (data) saveFleetStats(getCurrentPlanetId(), data);
+    }
+
+    // Vaisseaux d'une infobulle de flotte : { id: nombre } (les ressources et les « ? » sont ignorés)
+    function parseFleetShips(tooltipHtml) {
+        const ships = {};
+        for (const m of String(tooltipHtml || '').matchAll(/<td colspan="2">([^<]+):<\/td>\s*<td class="value">([^<]+)<\/td>/g)) {
+            const id = SHIP_IDS_BY_NAME[normalizeShipName(m[1])];
+            const count = parseInt(m[2].replace(/\D/g, ''), 10);
+            if (id && count > 0) ships[id] = (ships[id] || 0) + count;
+        }
+        return ships;
+    }
+
+    // Flottes qui reviennent, par planète/lune de retour : lignes « retour » de vos propres flottes.
+    // Sur chaque ligne d'un aller-retour, l'origine est la planète de départ, donc celle du retour.
+    function recordReturningFleets() {
+        const content = document.querySelector('#eventContent');
+        if (!content) return;
+        const rows = [...content.querySelectorAll('tr.eventFleet')];
+        if (rows.length === 0 && !/Pas de mouvement/i.test(content.textContent)) return;
+
+        const bodies = {};
+        rows.forEach(row => {
+            if (row.dataset.returnFlight !== 'true') return;
+            const missionImg = row.querySelector('.missionFleet img');
+            const missionTitle = missionImg ? (missionImg.getAttribute('data-tooltip-title') || missionImg.getAttribute('title') || '') : '';
+            if (!missionTitle.includes('Propre flotte')) return;
+
+            const coords = (row.querySelector('.coordsOrigin')?.textContent || '').replace(/[\[\]\s]/g, '');
+            if (!coords) return;
+            const origin = row.querySelector('.originFleet');
+            const isMoon = !!origin && (!!origin.querySelector('figure.moon') || origin.innerHTML.toLowerCase().includes('lune'));
+            const tooltip = row.querySelector('.icon_movement_reserve [data-tooltip-title], .icon_movement [data-tooltip-title], .icon_movement_reserve [title], .icon_movement [title]');
+            const ships = parseFleetShips(tooltip ? (tooltip.getAttribute('data-tooltip-title') || tooltip.getAttribute('title')) : '');
+            if (Object.keys(ships).length === 0) return;
+
+            const key = getBodyKey(isMoon ? 'moon' : 'planet', coords);
+            (bodies[key] = bodies[key] || []).push({
+                arrival: serverSecondsToLocalMs(parseInt(row.dataset.arrivalTime) || 0),
+                mission: parseInt(row.dataset.missionType) || 0,
+                ships,
+            });
+        });
+        localStorage.setItem(FLEET_RETURNS_KEY, JSON.stringify({ at: Date.now(), bodies }));
+    }
+
+    // Récupère la page Flotte de la planète affichée en arrière-plan (sans naviguer)
+    let fleetStatsLoading = false;
+    async function refreshFleetStats() {
+        renderFleetStats();
+        if (fleetStatsLoading) return;
+        const planetId = getCurrentPlanetId();
+        if (!planetId) return;
+        fleetStatsLoading = true;
+        renderFleetStats();
+        try {
+            const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&cp=${planetId}`, { credentials: 'include' });
+            const data = parseFleetDispatchData(await response.text());
+            if (data) saveFleetStats(planetId, data);
+        } catch (e) {
+            console.log('[Stats] Lecture de la page Flotte impossible:', e);
+        } finally {
+            fleetStatsLoading = false;
+            recordReturningFleets();
+            renderFleetStats();
+        }
+    }
+
+    // Nombre d'expéditions possibles avec `ships` pour la composition `template`, et le vaisseau qui limite
+    function simulateExpeditions(ships, template) {
+        let count = Infinity;
+        let limiting = null;
+        Object.entries(template.ships).forEach(([id, need]) => {
+            const possible = Math.floor((ships[id] || 0) / need);
+            if (possible < count) {
+                count = possible;
+                limiting = id;
+            }
+        });
+        return { count: Number.isFinite(count) ? count : 0, limiting };
+    }
+
+    function formatAgo(time) {
+        const s = Math.max(0, Math.round((Date.now() - time) / 1000));
+        if (s < 60) return `${s} s`;
+        if (s < 3600) return `${Math.floor(s / 60)} min`;
+        return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60).toString().padStart(2, '0')}`;
+    }
+
+    function renderFleetStats() {
+        const container = document.getElementById('cfg-stats-container');
+        if (!container) return;
+
+        const body = getCurrentBody();
+        const stats = loadJson(FLEET_STATS_KEY, {})[body.id];
+        const returnsData = loadJson(FLEET_RETURNS_KEY, { bodies: {} });
+        const label = `${body.type === 'moon' ? '🌙' : '🌍'} ${body.name || ''} [${body.coords}]`;
+        const fmt = n => Number(n || 0).toLocaleString('fr-FR');
+
+        if (!stats) {
+            container.innerHTML = `<div class="hint">${label} : ${fleetStatsLoading ? 'chargement de la page Flotte…' : 'aucune donnée. Cliquez sur 🔄 ou ouvrez la page Flotte.'}</div>`;
+            return;
+        }
+
+        // Retours attendus après le relevé « à quai » (ceux arrivés avant sont déjà comptés à quai)
+        const now = Date.now();
+        const returns = (returnsData.bodies[getBodyKey(body.type, body.coords)] || []).filter(r => r.arrival > stats.at);
+        const returning = {};
+        let nextArrival = null;
+        returns.forEach(r => {
+            Object.entries(r.ships).forEach(([id, n]) => { returning[id] = (returning[id] || 0) + n; });
+            if (r.arrival > now && (!nextArrival || r.arrival < nextArrival)) nextArrival = r.arrival;
+        });
+        const total = { ...stats.ships };
+        Object.entries(returning).forEach(([id, n]) => { total[id] = (total[id] || 0) + n; });
+
+        const ids = Object.keys(total).map(Number).filter(id => total[id] > 0).sort((a, b) => a - b);
+        let html = `<div class="stats-body">${label}</div>`;
+        html += `<div class="hint">À quai : relevé il y a ${formatAgo(stats.at)}${fleetStatsLoading ? ' (actualisation…)' : ''} · Retours : ${returnsData.at ? `liste des mouvements lue il y a ${formatAgo(returnsData.at)}` : 'liste des mouvements jamais lue (ouvrez la Vue d\'ensemble)'}</div>`;
+
+        if (ids.length === 0) {
+            html += '<div class="hint" style="margin-top: 8px;">Aucun vaisseau.</div>';
+        } else {
+            html += '<table class="stats-table"><tr><th>Vaisseau</th><th>À quai</th><th>En retour</th><th>Total</th></tr>';
+            ids.forEach(id => {
+                html += `<tr><td>${SHIP_NAMES[id] || `#${id}`}</td><td>${fmt(stats.ships[id])}</td><td>${returning[id] ? fmt(returning[id]) : '–'}</td><td><b>${fmt(total[id])}</b></td></tr>`;
+            });
+            html += '</table>';
+            html += `<div class="hint">${returns.length} flotte(s) en retour vers cette ${body.type === 'moon' ? 'lune' : 'planète'}${nextArrival ? ` · prochain retour ${formatClock(nextArrival)} (dans ${formatDelay(nextArrival - now)})` : ''}</div>`;
+        }
+
+        // Créneaux et simulation
+        html += '<div class="section-title">🚀 Expéditions possibles</div>';
+        if (stats.maxExpeditionCount !== null && stats.maxExpeditionCount !== undefined) {
+            const free = Math.max(0, stats.maxExpeditionCount - (stats.expeditionCount || 0));
+            html += `<div class="stats-slots">Créneaux d'expédition : <b>${stats.expeditionCount || 0} / ${stats.maxExpeditionCount}</b> utilisés · <b>${free}</b> libre(s)${stats.maxFleetCount ? ` · flottes ${stats.fleetCount || 0} / ${stats.maxFleetCount}` : ''}</div>`;
+        }
+        if (!stats.templates || stats.templates.length === 0) {
+            html += '<div class="hint">Aucune flotte d\'expédition enregistrée (liste « Flotte d\'expédition » de la page Flotte).</div>';
+        } else {
+            stats.templates.forEach(t => {
+                const docked = simulateExpeditions(stats.ships, t);
+                const all = simulateExpeditions(total, t);
+                const composition = Object.entries(t.ships).map(([id, n]) => `${n} ${SHIP_NAMES[id] || `#${id}`}`).join(', ');
+                const limit = all.limiting ? ` · limité par : ${SHIP_NAMES[all.limiting] || `#${all.limiting}`}` : '';
+                html += `
+                    <div class="stats-template">
+                        <div><b>${t.name}</b> <span class="hint">(${composition})</span></div>
+                        <div>À quai : <b>${docked.count}</b> expédition(s) · avec les retours : <b>${all.count}</b>${limit}</div>
+                    </div>
+                `;
+            });
+        }
+        container.innerHTML = html;
+    }
+
     // ===== Inactivité : les actions automatiques attendent que l'humain ait fini =====
 
     const ACTIVITY_KEY = 'ogame_plugin_last_activity';
@@ -5224,6 +5501,7 @@
 
             console.log('[Monitor] Vérification périodique des expéditions...');
             await waitForEventContent(5000);
+            recordReturningFleets();
             checkAlerts();
             checkExpeditions();
             await checkBuildQueues();
@@ -5245,6 +5523,7 @@
         // Mémorise les constructions visibles sur cette page (bâtiment et/ou formes de vie)
         recordConstructionInfoHere();
         rememberFleetTemplates();
+        recordFleetStatsHere();
         watchUserActivity();
         setInterval(renderIdleCard, 1000);
         watchPageResources();
@@ -5330,6 +5609,7 @@
 
             await waitForEventContent();
             console.log('[Monitor] EventContent chargé');
+            recordReturningFleets();
 
             const activeExpeditions = getActiveExpeditions();
             console.log('[Monitor] Expéditions actives:', activeExpeditions);
