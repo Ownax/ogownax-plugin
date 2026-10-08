@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.18.1
+// @version      1.19.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3981,13 +3981,15 @@
         return serverSecondsToLocalMs(parseInt(countdown.dataset.end));
     }
 
-    function addToBuildQueue(tile) {
+    // Ajoute les niveaux manquants jusqu'à `upToLevel` (par défaut : le niveau suivant)
+    function addToBuildQueue(tile, upToLevel = null) {
         const body = getCurrentBody();
         const component = getCurrentPage();
         const lane = getLaneOfComponent(component);
-        if (!body.id || !lane) return;
+        if (!body.id || !lane) return 0;
 
         const technologyId = parseInt(tile.dataset.technology);
+        const name = tile.getAttribute('aria-label') || `Bâtiment ${technologyId}`;
         const key = getQueueKey(body.id, lane);
         const queues = loadBuildQueues();
         const queue = queues[key] || { items: [] };
@@ -3996,21 +3998,79 @@
         queue.name = body.name;
 
         const planned = queue.items.filter(i => i.technologyId === technologyId).map(i => i.targetLevel);
-        const targetLevel = Math.max(getTileReachedLevel(tile), ...planned) + 1;
+        const firstLevel = Math.max(getTileReachedLevel(tile), ...planned) + 1;
+        const lastLevel = upToLevel === null ? firstLevel : upToLevel;
+        if (lastLevel < firstLevel) {
+            buildLog(`${name} niv. ${lastLevel} : déjà atteint ou déjà dans la file`);
+            return 0;
+        }
 
-        queue.items.push({
-            technologyId,
-            name: tile.getAttribute('aria-label') || `Bâtiment ${technologyId}`,
-            targetLevel,
-            component,
-        });
+        for (let level = firstLevel; level <= lastLevel; level++) {
+            queue.items.push({ technologyId, name, targetLevel: level, component });
+        }
         queue.nextCheckAt = 0;
         queue.status = '';
         queues[key] = queue;
         saveBuildQueues(queues);
 
-        buildLog(`Ajout file ${body.coords} (${body.type}): ${queue.items[queue.items.length - 1].name} niv. ${targetLevel}`);
+        buildLog(`Ajout file ${body.coords} (${body.type}): ${name} niv. ${firstLevel === lastLevel ? firstLevel : `${firstLevel} à ${lastLevel}`}`);
         renderBuildQueueUI();
+        return lastLevel - firstLevel + 1;
+    }
+
+    // Retire de la file les niveaux d'un bâtiment jusqu'à `upToLevel` inclus (au-delà du niveau atteint)
+    function removeLevelsFromBuildQueue(tile, upToLevel) {
+        const body = getCurrentBody();
+        const lane = getLaneOfComponent(getCurrentPage());
+        if (!body.id || !lane) return 0;
+        const technologyId = parseInt(tile.dataset.technology);
+        const key = getQueueKey(body.id, lane);
+        const queues = loadBuildQueues();
+        const queue = queues[key];
+        if (!queue) return 0;
+
+        const before = queue.items.length;
+        queue.items = queue.items.filter(i => !(i.technologyId === technologyId && i.targetLevel <= upToLevel));
+        const removed = before - queue.items.length;
+        if (removed === 0) return 0;
+        // Les niveaux supérieurs restants du même bâtiment sont décalés
+        queue.items.forEach(i => {
+            if (i.technologyId === technologyId) i.targetLevel -= removed;
+        });
+        queue.nextCheckAt = 0;
+        if (queue.items.length === 0) delete queues[key];
+        saveBuildQueues(queues);
+        buildLog(`Retrait file ${body.coords}: ${tile.getAttribute('aria-label') || technologyId} jusqu'au niv. ${upToLevel} (${removed} niveau(x))`);
+        renderBuildQueueUI();
+        return removed;
+    }
+
+    // Bouton « lists » d'OGLight dans le détail d'un bâtiment : OGLight note les ressources à rapatrier,
+    // et on ajoute (ou retire, si le bouton était déjà actif) les niveaux jusqu'au niveau visé dans OGLight
+    // (en-tête du détail : « 18 → 21 », réglé avec ses flèches ‹ ›).
+    function watchOgLightListButton() {
+        document.addEventListener('click', (e) => {
+            const button = e.target.closest && e.target.closest('#technologydetails .ogl_actions .ogl_button');
+            if (!button || button.textContent.trim() !== 'lists') return;
+            const details = button.closest('#technologydetails');
+            const technologyId = parseInt(details?.dataset.technologyId);
+            const tile = technologyId ? getBuildingTile(technologyId) : null;
+            const lane = getLaneOfComponent(getCurrentPage());
+            if (!tile || !lane || !BUILD_LANES[lane].isTechnology(technologyId)) return;
+
+            const levels = (details.querySelector('.information .level')?.textContent || '').match(/\d+/g);
+            const target = levels && levels.length >= 2 ? parseInt(levels[levels.length - 1]) : null;
+            if (!target) {
+                buildLog(`OGLight : niveau visé introuvable pour ${tile.getAttribute('aria-label') || technologyId}`);
+                return;
+            }
+            // L'état est lu avant qu'OGLight ne le bascule (écoute en phase de capture)
+            if (button.classList.contains('ogl_active')) {
+                removeLevelsFromBuildQueue(tile, target);
+            } else {
+                addToBuildQueue(tile, target);
+            }
+        }, true);
     }
 
     function removeFromBuildQueue(key, index) {
@@ -4720,26 +4780,6 @@
     function injectBuildQueueStyle() {
         const style = document.createElement('style');
         style.textContent = `
-            #technologies li.technology .ogp-queue-add {
-                position: absolute;
-                bottom: 2px;
-                left: 2px;
-                z-index: 5;
-                width: 18px;
-                height: 18px;
-                line-height: 16px;
-                text-align: center;
-                font-size: 14px;
-                font-weight: bold;
-                color: #9fffaf;
-                background: rgba(13, 41, 21, 0.9);
-                border: 1px solid #3c6a4a;
-                border-radius: 3px;
-                cursor: pointer;
-            }
-            #technologies li.technology .ogp-queue-add:hover {
-                background: rgba(26, 74, 42, 1);
-            }
             #technologies li.technology .ogp-queue-badge {
                 position: absolute;
                 top: 2px;
@@ -4846,20 +4886,8 @@
             if (getComputedStyle(tile).position === 'static') {
                 tile.style.position = 'relative';
             }
-
-            if (!tile.querySelector('.ogp-queue-add')) {
-                const addBtn = document.createElement('span');
-                addBtn.className = 'ogp-queue-add';
-                addBtn.textContent = '+';
-                addBtn.title = `Ajouter un niveau à la ${getLaneLabel(lane).toLowerCase()}`;
-                ['mousedown', 'mouseup'].forEach(type => addBtn.addEventListener(type, e => e.stopPropagation()));
-                addBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    addToBuildQueue(tile);
-                });
-                tile.appendChild(addBtn);
-            }
+            // Tuile déjà traitée (repère pour réinjecter l'étiquette si OGame recharge la liste)
+            tile.dataset.ogpReady = '1';
 
             const technologyId = parseInt(tile.dataset.technology);
             const queued = queue ? queue.items.filter(i => i.technologyId === technologyId && i.component === component) : [];
@@ -5003,7 +5031,7 @@
         const queues = loadBuildQueues();
         const keys = Object.keys(queues).filter(key => queues[key].items.length > 0);
         if (keys.length === 0) {
-            container.innerHTML = '<div class="hint">Aucune file. Utilisez le bouton « + » sur les pages Ressources, Installations, Formes de vie et Recherche.</div>';
+            container.innerHTML = `<div class="hint">Aucune file. Dans le détail d'un bâtiment ou d'une recherche, réglez le niveau visé avec les flèches ‹ › d'OGLight puis cliquez sur son bouton ☰ (lists).</div>`;
             return;
         }
 
@@ -5035,7 +5063,7 @@
         const technologies = document.getElementById('technologies');
         if (technologies) {
             new MutationObserver(() => {
-                if (getBuildingTiles().some(tile => !tile.querySelector('.ogp-queue-add'))) {
+                if (getBuildingTiles().some(tile => !tile.dataset.ogpReady)) {
                     renderBuildTileButtons();
                 }
             }).observe(technologies, { childList: true, subtree: true });
@@ -5524,6 +5552,7 @@
         rememberFleetTemplates();
         recordFleetStatsHere();
         watchUserActivity();
+        watchOgLightListButton();
         setInterval(renderIdleCard, 1000);
         watchPageResources();
         initBuildQueueUI();

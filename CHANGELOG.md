@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.0
+
+- File de construction branchée sur **OGLight** : dans le détail d'un bâtiment / d'une recherche / d'un bâtiment de formes de vie, régler le niveau visé avec les flèches ‹ › d'OGLight puis cliquer sur son bouton ☰ (`lists`) ajoute à la file **tous les niveaux manquants** jusqu'au niveau visé (OGLight note toujours les ressources à rapatrier).
+- Bouton ☰ déjà actif (retrait de la liste OGLight) : les niveaux correspondants sont retirés de la file.
+- Suppression des boutons « + » sous les icônes ; l'étiquette « → N » du niveau visé reste.
+
 ## 1.18.1
 
 - Onglet 📊 Stats : « Expéditions possibles » remplacé par une **répartition par expédition** — pour chaque vaisseau, total (à quai + en retour) ÷ nombre maximum d'expéditions, reste, et comparaison avec chaque flotte d'expédition enregistrée (rouge si elle demande plus que la répartition, vert sinon). Sert à dimensionner la flotte préconfigurée.
