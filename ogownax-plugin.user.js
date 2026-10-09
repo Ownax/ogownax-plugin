@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.19.0
+// @version      1.20.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -85,7 +85,9 @@
     const BUILD_QUEUE_KEY = 'ogame_plugin_build_queue';
     const BUILD_STATE_KEY = 'ogame_plugin_build_state';
     const BUILD_INFO_KEY = 'ogame_plugin_construction_info';
-    // Deux emplacements de construction indépendants par planète/lune
+    // Emplacements de construction indépendants par planète/lune (+ la recherche, commune au compte)
+    // Formes de vie : bâtiments 1x1xx (ex. 11101), recherches 1x2xx (ex. 11201, 13202)
+    const isLifeformKind = (id, kind) => id > 10000 && Math.floor(id / 100) % 10 === kind;
     const BUILD_LANES = {
         building: {
             pages: ['supplies', 'facilities'],
@@ -98,7 +100,14 @@
             pages: ['lfbuildings'],
             box: '#productionboxlfbuildingcomponent',
             title: '🧬 File formes de vie',
-            isTechnology: id => id > 10000,
+            isTechnology: id => isLifeformKind(id, 1),
+        },
+        // Une recherche de forme de vie à la fois par planète, en parallèle des bâtiments de forme de vie
+        lfresearch: {
+            pages: ['lfresearch'],
+            box: '#productionboxlfresearchcomponent',
+            title: '🧪 File recherches formes de vie',
+            isTechnology: id => isLifeformKind(id, 2),
         },
         // Une seule recherche à la fois pour tout le compte ; elle est payée par la planète qui la lance
         research: {
@@ -3839,8 +3848,8 @@
     }
 
     // Clé de stockage d'une file : l'id de la planète pour les bâtiments (compatible avec les files existantes),
-    // « id|lf » pour les formes de vie, « id|rs » pour la recherche
-    const LANE_KEY_SUFFIX = { lifeform: '|lf', research: '|rs' };
+    // « id|lf » pour les formes de vie, « id|lr » pour les recherches de formes de vie, « id|rs » pour la recherche
+    const LANE_KEY_SUFFIX = { lifeform: '|lf', lfresearch: '|lr', research: '|rs' };
 
     function getQueueKey(planetId, lane) {
         return `${planetId}${LANE_KEY_SUFFIX[lane] || ''}`;
@@ -3855,10 +3864,12 @@
         return Object.keys(LANE_KEY_SUFFIX).find(lane => LANE_KEY_SUFFIX[lane] === suffix) || 'building';
     }
 
-    const LANE_ICONS = { building: '🏗️', lifeform: '🧬', research: '🔬' };
+    const isResearchLane = lane => lane === 'research' || lane === 'lfresearch';
+
+    const LANE_ICONS = { building: '🏗️', lifeform: '🧬', lfresearch: '🧪', research: '🔬' };
 
     function getLaneLabel(lane) {
-        return { building: 'File de construction', lifeform: 'File formes de vie', research: 'File de recherche' }[lane];
+        return { building: 'File de construction', lifeform: 'File formes de vie', lfresearch: 'File recherches formes de vie', research: 'File de recherche' }[lane];
     }
 
     function getBuildingTiles() {
@@ -3935,7 +3946,7 @@
             if (b && b.end > now && b.technologyId === RESEARCH_LAB_ID) {
                 return { reason: 'Laboratoire de recherche en extension', until: b.end };
             }
-        } else if (item) {
+        } else if (lane === 'building' && item) {
             if (LIFEFORM_BLOCKING_BUILDINGS[item.technologyId]) {
                 const l = info.lifeform;
                 if (l && l.end > now) {
@@ -4482,7 +4493,7 @@
         const constructionEnd = getConstructionEnd(lane);
         if (constructionEnd) {
             // Fin déjà passée : OGame finalise la construction, on revient dans quelques secondes
-            const busyLabel = lane === 'research' ? 'Recherche en cours' : 'Construction en cours';
+            const busyLabel = isResearchLane(lane) ? 'Recherche en cours' : 'Construction en cours';
             queue.status = constructionEnd > Date.now() ? busyLabel : `${busyLabel} de finalisation`;
             queue.nextCheckAt = Math.max(constructionEnd, Date.now()) + 5000;
             queue.busyUntil = constructionEnd;
@@ -4573,7 +4584,7 @@
                     await wait(300);
                     upgradeBtn.click();
                     const icon = LANE_ICONS[lane];
-                    notifyDiscord(`${icon} **${lane === 'research' ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
+                    notifyDiscord(`${icon} **${isResearchLane(lane) ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
                     renderBuildQueueUI();
                     return null;
                 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.20.0
+
+- Nouvelle file **🧪 Recherches formes de vie** (page Recherche des formes de vie), séparée par planète : une recherche de forme de vie à la fois, en parallèle des bâtiments de formes de vie, de la recherche classique et de l'Usine de robots/nanites (emplacements indépendants).
+- Ajout via le bouton ☰ d'OGLight comme les autres files ; les emplacements de recherche vides sont ignorés.
+- Bâtiments et recherches de formes de vie distingués par leur identifiant (1x1xx / 1x2xx).
+
 ## 1.19.0
 
 - File de construction branchée sur **OGLight** : dans le détail d'un bâtiment / d'une recherche / d'un bâtiment de formes de vie, régler le niveau visé avec les flèches ‹ › d'OGLight puis cliquer sur son bouton ☰ (`lists`) ajoute à la file **tous les niveaux manquants** jusqu'au niveau visé (OGLight note toujours les ressources à rapatrier).
