@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.21.0
+
+- Nouvel onglet **🏰 Auto-défense** (désactivé par défaut) : par planète/lune, un **seuil** par ressource (métal, cristal, deutérium ; 0 = ignoré), un **stock minimum à garder** et une **liste ordonnée de défenses** (▲▼ pour l'ordre, ✕ pour retirer).
+- Dès qu'une ressource atteint son seuil, le plugin ouvre la page Défense de la planète et commande, dans l'ordre, le **maximum possible** de chaque défense sans descendre sous le stock minimum (plafonné par OGame : boucliers, silo, 99 999 par commande). Une défense par chargement de page, la cascade continue avec les ressources restantes.
+- Tournée périodique (30 min par défaut) : une planète est revue au plus une fois par intervalle, plus tôt si sa production lui fait atteindre le seuil (ressources relevées à chaque passage). Attend votre inactivité comme les autres actions automatiques.
+- Montants saisis en 100M, 1,5G, 500k ou 100.000.000. Résumé des commandes sur Discord et dans le journal.
+
 ## 1.20.0
 
 - Nouvelle file **🧪 Recherches formes de vie** (page Recherche des formes de vie), séparée par planète : une recherche de forme de vie à la fois, en parallèle des bâtiments de formes de vie, de la recherche classique et de l'Usine de robots/nanites (emplacements indépendants).

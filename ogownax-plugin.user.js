@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.20.0
+// @version      1.21.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -74,7 +74,13 @@
         idle: {
             enabled: true,
             delay: 60,
-        }
+        },
+        // Défense automatique : { bodies: { [id]: { enabled, threshold: {metal,crystal,deuterium}, keep: {...}, order: [ids] } } }
+        autoDefense: {
+            enabled: false,
+            interval: 30,
+            bodies: {},
+        },
     };
 
     const LAUNCH_STATE_KEY = 'ogame_plugin_launch_state';
@@ -154,6 +160,7 @@
                     fleeConfig: { ...DEFAULT_CONFIG.fleeConfig, ...parsed.fleeConfig },
                     buildQueue: { ...DEFAULT_CONFIG.buildQueue, ...parsed.buildQueue },
                     idle: { ...DEFAULT_CONFIG.idle, ...parsed.idle },
+                    autoDefense: { ...DEFAULT_CONFIG.autoDefense, ...parsed.autoDefense },
                 };
                 if (parsed.expeditionsPerPlanet && !parsed.expeditionsPerBody) {
                     config.expeditionsPerBody = {};
@@ -2630,6 +2637,64 @@
                 background: linear-gradient(180deg, #1a3a4a 0%, #0d1f29 100%);
                 color: #9fc3d6;
             }
+            #ogame-plugin-panel .autodef-body {
+                border: 1px solid #2c4a5a;
+                border-radius: 4px;
+                padding: 6px 8px;
+                margin-bottom: 6px;
+                background: rgba(20, 40, 55, 0.4);
+            }
+            #ogame-plugin-panel .autodef-head .body-coords {
+                color: #7a9aaa;
+                font-size: 10px;
+            }
+            #ogame-plugin-panel .autodef-table {
+                width: 100%;
+                border-collapse: collapse;
+                margin: 6px 0;
+            }
+            #ogame-plugin-panel .autodef-table th {
+                font-size: 10px;
+                color: #8ab;
+                font-weight: normal;
+            }
+            #ogame-plugin-panel .autodef-table td:first-child {
+                font-size: 10px;
+                color: #8ab;
+                padding-right: 4px;
+            }
+            #ogame-plugin-panel .autodef-table input {
+                width: 100%;
+                box-sizing: border-box;
+                text-align: right;
+            }
+            #ogame-plugin-panel .autodef-item {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 2px 0;
+                font-size: 11px;
+            }
+            #ogame-plugin-panel .autodef-rank {
+                color: #6cf;
+                width: 16px;
+            }
+            #ogame-plugin-panel .autodef-name {
+                flex: 1;
+            }
+            #ogame-plugin-panel .autodef-item button {
+                width: auto;
+                padding: 1px 5px;
+                margin: 0;
+                font-size: 10px;
+            }
+            #ogame-plugin-panel .autodef-item button:disabled {
+                opacity: 0.3;
+            }
+            #ogame-plugin-panel .autodef-add {
+                width: 100%;
+                margin-top: 4px;
+            }
             #ogame-plugin-panel .cfg-tabs {
                 display: flex;
                 gap: 3px;
@@ -2932,6 +2997,7 @@
                 <button data-tab="defense">🛡️ Défense</button>
                 <button data-tab="expeditions">🚀 Expéditions</button>
                 <button data-tab="build">🏗️ Construction</button>
+                <button data-tab="autodef">🏰 Auto-défense</button>
                 <button data-tab="alerts">🔔 Alertes</button>
                 <button data-tab="stats">📊 Stats</button>
                 <button data-tab="general">⚙️ Général</button>
@@ -3084,6 +3150,29 @@
                     <button class="refresh-btn" id="cfg-buildqueue-log-refresh" title="Rafraîchir">🔄</button>
                 </div>
                 <pre id="cfg-buildqueue-log" class="bq-log"></pre>
+            </div>
+
+            <div class="cfg-tab" data-tab="autodef">
+                <div class="section-title">🏰 Défense automatique</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-autodef-enabled">
+                        Construire des défenses automatiquement
+                    </label>
+                    <div class="hint">Dès qu'une ressource atteint son seuil sur une planète, commande le maximum de chaque défense dans l'ordre choisi, en gardant toujours le stock minimum. Montants acceptés : 100M, 1,5G, 500k, 100.000.000 (vide ou 0 = ignoré).</div>
+                </div>
+
+                <div class="config-group">
+                    <label>Tournée des planètes toutes les (min)</label>
+                    <input type="number" id="cfg-autodef-interval" min="5" max="1440" style="width: 80px;">
+                    <div class="hint">Une planète est revue au plus une fois par intervalle, plus tôt si sa production lui fait atteindre le seuil. Attend votre inactivité.</div>
+                </div>
+
+                <div class="hint" id="cfg-autodef-status"></div>
+
+                <div class="section-title">Par planète/lune</div>
+                <div id="cfg-autodef-container"></div>
             </div>
 
             <div class="cfg-tab" data-tab="alerts">
@@ -3623,6 +3712,10 @@
         document.getElementById('cfg-buildqueue-recheck').value = CONFIG.buildQueue.recheckInterval;
         document.getElementById('cfg-idle-enabled').checked = CONFIG.idle.enabled;
         document.getElementById('cfg-idle-delay').value = CONFIG.idle.delay;
+        document.getElementById('cfg-autodef-enabled').checked = CONFIG.autoDefense.enabled;
+        document.getElementById('cfg-autodef-interval').value = CONFIG.autoDefense.interval;
+        renderAutoDefenseConfig();
+        renderAutoDefenseStatus();
 
         renderPanicSelects();
         renderExpeditionsConfig();
@@ -3730,7 +3823,12 @@
             idle: {
                 enabled: document.getElementById('cfg-idle-enabled').checked,
                 delay: Math.max(5, parseInt(document.getElementById('cfg-idle-delay').value) || 60),
-            }
+            },
+            autoDefense: {
+                enabled: document.getElementById('cfg-autodef-enabled').checked,
+                interval: Math.max(5, parseInt(document.getElementById('cfg-autodef-interval').value) || 30),
+                bodies: collectAutoDefenseBodies(),
+            },
         };
 
         saveConfig(CONFIG);
@@ -3829,8 +3927,10 @@
         const panicState = loadPanicState();
         const fleeState = loadFleeState();
         const buildState = loadBuildState();
+        const defenseState = loadDefenseState();
         const hasActiveFlee = Object.values(fleeState).some(s => s && s.active);
-        return !!((launchState && launchState.active) || (panicState && panicState.active) || hasActiveFlee || (buildState && buildState.active));
+        return !!((launchState && launchState.active) || (panicState && panicState.active) || hasActiveFlee || (buildState && buildState.active)
+            || (defenseState && defenseState.active));
     }
 
     function getCurrentBody() {
@@ -5095,6 +5195,448 @@
         }, 30 * 1000);
     }
 
+    // ===== Défense automatique (par planète/lune) =====
+    // Dès qu'une ressource atteint son seuil, commande le maximum de chaque défense dans l'ordre choisi,
+    // en gardant le stock minimum configuré. Tournée périodique, uniquement quand vous êtes inactif.
+
+    const DEFENSE_STATE_KEY = 'ogame_plugin_defense_state';
+    const DEFENSE_INFO_KEY = 'ogame_plugin_defense_info';
+    const DEFENSE_NAMES = {
+        401: 'Lanceur de missiles',
+        402: 'Artillerie laser légère',
+        403: 'Artillerie laser lourde',
+        404: 'Canon de Gauss',
+        405: 'Artillerie à ions',
+        406: 'Lanceur de plasma',
+        407: 'Petit bouclier',
+        408: 'Grand bouclier',
+        502: 'Missile d\'interception',
+        503: 'Missile interplanétaire',
+    };
+    const DEFENSE_IDS = Object.keys(DEFENSE_NAMES).map(Number);
+    // Le champ « Nombre » d'OGame n'accepte pas plus (checkIntInput(this, 1, 99999))
+    const DEFENSE_MAX_PER_ORDER = 99999;
+
+    // « 100M », « 1,5G », « 500k », « 100.000.000 » -> nombre (0 si vide ou illisible)
+    function parseAmount(text) {
+        const s = String(text || '').trim().toLowerCase().replace(/[\s  ]/g, '');
+        const match = s.match(/^([\d.,]+)([kmg]?)$/);
+        if (!match) return 0;
+        const multiplier = { '': 1, k: 1e3, m: 1e6, g: 1e9 }[match[2]];
+        const number = match[2]
+            ? parseFloat(match[1].replace(',', '.'))
+            : parseFloat(match[1].replace(/[.,]/g, ''));
+        return Number.isFinite(number) ? Math.round(number * multiplier) : 0;
+    }
+
+    function formatAmount(value) {
+        if (!value) return '';
+        const units = [[1e9, 'G'], [1e6, 'M'], [1e3, 'k']];
+        for (const [size, unit] of units) {
+            if (value >= size && value % (size / 100) === 0) {
+                return `${parseFloat((value / size).toFixed(2)).toString().replace('.', ',')}${unit}`;
+            }
+        }
+        return value.toLocaleString('fr-FR');
+    }
+
+    function getAutoDefenseBodyConfig(bodyId) {
+        const body = (CONFIG.autoDefense.bodies || {})[bodyId];
+        if (!body) return null;
+        return {
+            enabled: !!body.enabled,
+            threshold: { metal: 0, crystal: 0, deuterium: 0, ...body.threshold },
+            keep: { metal: 0, crystal: 0, deuterium: 0, ...body.keep },
+            order: (body.order || []).filter(id => DEFENSE_NAMES[id]),
+        };
+    }
+
+    function isAutoDefenseActiveFor(bodyId) {
+        const cfg = getAutoDefenseBodyConfig(bodyId);
+        return !!(cfg && cfg.enabled && cfg.order.length > 0
+            && BUILD_RESOURCES.some(r => cfg.threshold[r] > 0));
+    }
+
+    function loadDefenseState() {
+        return loadJson(DEFENSE_STATE_KEY, null);
+    }
+
+    function saveDefenseState(state) {
+        localStorage.setItem(DEFENSE_STATE_KEY, JSON.stringify(state));
+    }
+
+    function clearDefenseState() {
+        localStorage.removeItem(DEFENSE_STATE_KEY);
+    }
+
+    function loadDefenseInfo() {
+        return loadJson(DEFENSE_INFO_KEY, {});
+    }
+
+    function saveDefenseInfo(info) {
+        localStorage.setItem(DEFENSE_INFO_KEY, JSON.stringify(info));
+    }
+
+    // Ressources de la planète affichée mémorisées à chaque chargement : on sait ainsi, sans y aller,
+    // quand une autre planète atteindra son seuil (stock + production, plafonné au hangar)
+    function recordDefenseResourcesHere() {
+        const planetId = getCurrentPlanetId();
+        const resources = getPageResources();
+        if (!planetId || !resources) return;
+        const info = loadDefenseInfo();
+        const snapshot = {};
+        BUILD_RESOURCES.forEach(r => {
+            snapshot[r] = {
+                amount: resources[r].amount,
+                production: resources[r].production,
+                storage: Number.isFinite(resources[r].storage) ? resources[r].storage : null,
+            };
+        });
+        info[planetId] = { ...(info[planetId] || {}), resources: snapshot, at: resourcesSnapshotAt };
+        saveDefenseInfo(info);
+    }
+
+    function predictAmount(snapshot, at, time) {
+        if (!snapshot) return 0;
+        const storage = snapshot.storage === null || snapshot.storage === undefined ? Infinity : snapshot.storage;
+        if (snapshot.amount >= storage) return snapshot.amount;
+        return Math.min(storage, snapshot.amount + snapshot.production * Math.max(0, time - at) / 1000);
+    }
+
+    // Instant où une des ressources atteint son seuil (null si jamais avec la production actuelle)
+    function getThresholdReachTime(cfg, bodyInfo, now = Date.now()) {
+        if (!bodyInfo || !bodyInfo.resources) return now;
+        let best = null;
+        BUILD_RESOURCES.forEach(r => {
+            const threshold = cfg.threshold[r];
+            const snapshot = bodyInfo.resources[r];
+            if (!threshold || !snapshot) return;
+            if (predictAmount(snapshot, bodyInfo.at, now) >= threshold) {
+                best = now;
+                return;
+            }
+            const storage = snapshot.storage === null || snapshot.storage === undefined ? Infinity : snapshot.storage;
+            if (snapshot.production <= 0 || threshold > storage) return;
+            const reach = Math.max(now, bodyInfo.at + (threshold - snapshot.amount) / snapshot.production * 1000);
+            if (best === null || reach < best) best = reach;
+        });
+        return best;
+    }
+
+    function getAutoDefenseInterval() {
+        return Math.max(5, CONFIG.autoDefense.interval || 30) * 60 * 1000;
+    }
+
+    // Prochain passage sur la planète : seuil prévu atteint, ou relevé trop ancien (tournée).
+    // Au plus un passage par intervalle (évite de boucler quand rien n'est constructible).
+    function getAutoDefenseNextAt(bodyId, now = Date.now()) {
+        const cfg = getAutoDefenseBodyConfig(bodyId);
+        const bodyInfo = loadDefenseInfo()[bodyId];
+        const interval = getAutoDefenseInterval();
+        if (!bodyInfo || !bodyInfo.at) return now;
+        const reach = getThresholdReachTime(cfg, bodyInfo, now);
+        const stale = bodyInfo.at + interval;
+        const due = reach === null ? stale : Math.min(reach, stale);
+        return Math.max(due, (bodyInfo.lastRunAt || 0) + interval);
+    }
+
+    function getDefensePageUrl(planetId) {
+        return getBuildPageUrl('defenses', planetId);
+    }
+
+    function navigateToDefensePage(planetId) {
+        saveDefenseState({ active: true, planetId, startedAt: Date.now(), attempts: 0, done: [], orders: [] });
+        window.location.href = getDefensePageUrl(planetId);
+    }
+
+    async function checkAutoDefense() {
+        if (!CONFIG.autoDefense.enabled) return;
+        if (isActionInProgress()) return;
+        if (!isUserIdle()) {
+            runWhenIdle('defense', checkAutoDefense);
+            return;
+        }
+
+        const now = Date.now();
+        const currentId = getCurrentPlanetId();
+        const bodies = getAllCelestialBodies().filter(b => isAutoDefenseActiveFor(b.id));
+        const due = bodies
+            .map(b => ({ body: b, at: getAutoDefenseNextAt(b.id, now) }))
+            .filter(d => d.at <= now)
+            .sort((a, b) => (b.body.id === currentId) - (a.body.id === currentId) || a.at - b.at);
+        if (due.length === 0) return;
+
+        const target = due[0].body;
+        if (target.id === currentId && getCurrentPage() === 'defenses') {
+            await runAutoDefenseHere({ active: true, planetId: target.id, startedAt: now, attempts: 0, done: [], orders: [] });
+            return;
+        }
+        buildLog(`🏰 Défense auto : passage sur ${target.coords} (${target.name})`);
+        navigateToDefensePage(target.id);
+    }
+
+    async function processDefenseState() {
+        const state = loadDefenseState();
+        if (!state || !state.active) return;
+        if (Date.now() - state.startedAt > 3 * 60 * 1000) {
+            buildLog('🏰 Défense auto : état expiré, abandon');
+            finishAutoDefense(state, 'Abandon (délai dépassé)');
+            return;
+        }
+        if (getCurrentPlanetId() !== state.planetId || getCurrentPage() !== 'defenses') {
+            if (state.attempts >= 2) {
+                buildLog('🏰 Défense auto : page Défense inaccessible, abandon');
+                finishAutoDefense(state, 'Page Défense inaccessible');
+                return;
+            }
+            saveDefenseState({ ...state, attempts: state.attempts + 1 });
+            window.location.href = getDefensePageUrl(state.planetId);
+            return;
+        }
+        await runAutoDefenseHere(state);
+    }
+
+    function finishAutoDefense(state, result) {
+        clearDefenseState();
+        const info = loadDefenseInfo();
+        info[state.planetId] = { ...(info[state.planetId] || {}), lastRunAt: Date.now(), lastResult: result };
+        saveDefenseInfo(info);
+        renderAutoDefenseStatus();
+    }
+
+    function formatDefenseOrders(orders) {
+        return orders.map(o => `${o.count.toLocaleString('fr-FR')} ${DEFENSE_NAMES[o.id]}`).join(', ');
+    }
+
+    // Sur la page Défense de la planète : commande au plus une défense par chargement de page
+    // (OGame recharge la page après « Ajouter » ; les ressources restantes sont alors à jour)
+    async function runAutoDefenseHere(state) {
+        const cfg = getAutoDefenseBodyConfig(state.planetId);
+        const body = getCurrentBody();
+        if (!cfg || !cfg.enabled) {
+            finishAutoDefense(state, 'Désactivée');
+            return;
+        }
+        try {
+            await waitForElement('#technologies li.technology', 5000);
+        } catch (e) {
+            buildLog('🏰 Défense auto : défenses non chargées');
+            finishAutoDefense(state, 'Défenses non chargées');
+            return;
+        }
+        const resources = getPageResources();
+        if (!resources) {
+            finishAutoDefense(state, 'Ressources illisibles');
+            return;
+        }
+        const have = {};
+        BUILD_RESOURCES.forEach(r => { have[r] = getResourceAmountAt(r, Date.now()); });
+
+        // Le seuil ne compte qu'au départ : ensuite on continue la cascade avec ce qui reste au-dessus du stock minimum
+        if (state.orders.length === 0 && state.done.length === 0) {
+            const reached = BUILD_RESOURCES.filter(r => cfg.threshold[r] > 0 && have[r] >= cfg.threshold[r]);
+            if (reached.length === 0) {
+                buildLog(`🏰 Défense auto ${body.coords} : seuil non atteint`);
+                finishAutoDefense(state, 'Seuil non atteint');
+                return;
+            }
+            buildLog(`🏰 Défense auto ${body.coords} : seuil atteint (${reached.map(r => RESOURCE_LABELS[r]).join(', ')})`);
+        }
+
+        for (const id of cfg.order) {
+            if (state.done.includes(id)) continue;
+            state.done.push(id);
+            saveDefenseState(state);
+            const name = DEFENSE_NAMES[id];
+            const tile = document.querySelector(`#technologies li.technology[data-technology="${id}"]`);
+            if (!tile || tile.dataset.status === 'off') {
+                buildLog(`🏰 ${name} : non disponible`);
+                continue;
+            }
+            const details = await openTechnologyDetails(tile, id);
+            if (!details) {
+                buildLog(`🏰 ${name} : détail introuvable`);
+                continue;
+            }
+            const element = details.element;
+            const input = element.querySelector('#build_amount, input[name="build_amount"]');
+            const button = element.querySelector(`button.upgrade[data-technology="${id}"]`);
+            if (!input || !button || button.disabled) {
+                closeTechnologyDetails();
+                buildLog(`🏰 ${name} : construction impossible pour le moment`);
+                continue;
+            }
+
+            // Nombre possible en gardant le stock minimum, plafonné par OGame (boucliers, silo…)
+            let count = DEFENSE_MAX_PER_ORDER;
+            BUILD_RESOURCES.forEach(r => {
+                const unitCost = parseInt(element.querySelector(`.costs li.resource.${r}[data-value]`)?.dataset.value) || 0;
+                if (unitCost > 0) count = Math.min(count, Math.floor((have[r] - cfg.keep[r]) / unitCost));
+            });
+            const ogameMax = parseInt(input.getAttribute('max'));
+            if (Number.isFinite(ogameMax)) count = Math.min(count, ogameMax);
+            if (count <= 0) {
+                closeTechnologyDetails();
+                buildLog(`🏰 ${name} : 0 possible (stock minimum gardé)`);
+                continue;
+            }
+
+            state.orders.push({ id, count });
+            state.reloadAt = Date.now();
+            saveDefenseState(state);
+            buildLog(`🏰 Commande de ${count.toLocaleString('fr-FR')} ${name} sur ${body.coords}`);
+            input.value = String(count);
+            ['input', 'keyup', 'change'].forEach(type => input.dispatchEvent(new Event(type, { bubbles: true })));
+            await wait(300);
+            button.click();
+            // OGame recharge la page ; sinon on la recharge nous-mêmes pour repartir des ressources à jour
+            setTimeout(() => {
+                const current = loadDefenseState();
+                if (current && current.active && current.reloadAt === state.reloadAt) {
+                    window.location.href = getDefensePageUrl(state.planetId);
+                }
+            }, 8000);
+            return;
+        }
+
+        const result = state.orders.length > 0 ? `Commandé : ${formatDefenseOrders(state.orders)}` : 'Rien de constructible (stock minimum)';
+        buildLog(`🏰 Défense auto ${body.coords} terminée : ${result}`);
+        if (state.orders.length > 0) {
+            notifyDiscord(`🏰 **Défenses lancées** sur ${body.name} [${body.coords}] : ${formatDefenseOrders(state.orders)}`);
+        }
+        finishAutoDefense(state, result);
+    }
+
+    // ----- Configuration (onglet 🏰 Auto-défense) -----
+
+    let autoDefenseDraft = null;
+
+    function renderAutoDefenseConfig() {
+        const container = document.getElementById('cfg-autodef-container');
+        if (!container) return;
+        autoDefenseDraft = JSON.parse(JSON.stringify(CONFIG.autoDefense.bodies || {}));
+        const bodies = getAllCelestialBodies();
+        if (bodies.length === 0) {
+            container.innerHTML = '<div class="hint">Aucune planète détectée</div>';
+            return;
+        }
+        container.innerHTML = bodies.map(b => `<div class="autodef-body" data-body="${b.id}"></div>`).join('');
+        bodies.forEach(b => renderAutoDefenseBody(b));
+    }
+
+    function renderAutoDefenseBody(body) {
+        const el = document.querySelector(`#cfg-autodef-container .autodef-body[data-body="${body.id}"]`);
+        if (!el) return;
+        const cfg = autoDefenseDraft[body.id] || { enabled: false, threshold: {}, keep: {}, order: [] };
+        autoDefenseDraft[body.id] = cfg;
+        const order = (cfg.order || []).filter(id => DEFENSE_NAMES[id]);
+        const unused = DEFENSE_IDS.filter(id => !order.includes(id));
+        const info = loadDefenseInfo()[body.id] || {};
+        const icon = body.type === 'moon' ? '🌙' : '🪐';
+        const field = (kind, r) => `<input type="text" class="autodef-amount" data-kind="${kind}" data-res="${r}" value="${formatAmount((cfg[kind] || {})[r] || 0)}" placeholder="0">`;
+
+        el.innerHTML = `
+            <label class="checkbox-label autodef-head">
+                <input type="checkbox" class="autodef-enabled" ${cfg.enabled ? 'checked' : ''}>
+                ${icon} ${body.name} <span class="body-coords">[${body.coords}]</span>
+            </label>
+            <div class="autodef-details" style="display: ${cfg.enabled ? 'block' : 'none'}">
+                <table class="autodef-table">
+                    <tr><th></th><th>Métal</th><th>Cristal</th><th>Deut</th></tr>
+                    <tr><td>Seuil</td>${BUILD_RESOURCES.map(r => `<td>${field('threshold', r)}</td>`).join('')}</tr>
+                    <tr><td>Garder</td>${BUILD_RESOURCES.map(r => `<td>${field('keep', r)}</td>`).join('')}</tr>
+                </table>
+                <div class="autodef-order">
+                    ${order.map((id, i) => `
+                        <div class="autodef-item">
+                            <span class="autodef-rank">${i + 1}.</span>
+                            <span class="autodef-name">${DEFENSE_NAMES[id]}</span>
+                            <button data-move="up" data-id="${id}" ${i === 0 ? 'disabled' : ''} title="Monter">▲</button>
+                            <button data-move="down" data-id="${id}" ${i === order.length - 1 ? 'disabled' : ''} title="Descendre">▼</button>
+                            <button data-remove="${id}" title="Retirer">✕</button>
+                        </div>`).join('') || '<div class="hint">Aucune défense choisie</div>'}
+                </div>
+                ${unused.length ? `<select class="autodef-add"><option value="">+ Ajouter une défense…</option>${unused.map(id => `<option value="${id}">${DEFENSE_NAMES[id]}</option>`).join('')}</select>` : ''}
+                <div class="hint">${info.lastRunAt ? `Dernier passage ${formatClock(info.lastRunAt)} : ${info.lastResult || ''}` : 'Jamais passé'}</div>
+            </div>
+        `;
+
+        const readFields = () => {
+            el.querySelectorAll('.autodef-amount').forEach(input => {
+                cfg[input.dataset.kind] = { ...(cfg[input.dataset.kind] || {}), [input.dataset.res]: parseAmount(input.value) };
+            });
+        };
+        el.querySelector('.autodef-enabled').addEventListener('change', (e) => {
+            readFields();
+            cfg.enabled = e.target.checked;
+            renderAutoDefenseBody(body);
+        });
+        el.querySelectorAll('.autodef-amount').forEach(input => {
+            input.addEventListener('change', () => {
+                readFields();
+                input.value = formatAmount(parseAmount(input.value));
+            });
+        });
+        el.querySelectorAll('[data-move]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                readFields();
+                const id = parseInt(btn.dataset.id);
+                const i = order.indexOf(id);
+                const j = btn.dataset.move === 'up' ? i - 1 : i + 1;
+                if (j < 0 || j >= order.length) return;
+                [order[i], order[j]] = [order[j], order[i]];
+                cfg.order = order;
+                renderAutoDefenseBody(body);
+            });
+        });
+        el.querySelectorAll('[data-remove]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                readFields();
+                cfg.order = order.filter(id => id !== parseInt(btn.dataset.remove));
+                renderAutoDefenseBody(body);
+            });
+        });
+        el.querySelector('.autodef-add')?.addEventListener('change', (e) => {
+            const id = parseInt(e.target.value);
+            if (!id) return;
+            readFields();
+            cfg.order = [...order, id];
+            renderAutoDefenseBody(body);
+        });
+    }
+
+    // Valeurs saisies dans l'onglet (y compris les champs modifiés mais pas encore validés)
+    function collectAutoDefenseBodies() {
+        const bodies = JSON.parse(JSON.stringify(autoDefenseDraft || CONFIG.autoDefense.bodies || {}));
+        document.querySelectorAll('#cfg-autodef-container .autodef-body').forEach(el => {
+            const cfg = bodies[el.dataset.body] || (bodies[el.dataset.body] = { enabled: false, threshold: {}, keep: {}, order: [] });
+            cfg.enabled = el.querySelector('.autodef-enabled').checked;
+            el.querySelectorAll('.autodef-amount').forEach(input => {
+                cfg[input.dataset.kind] = { ...(cfg[input.dataset.kind] || {}), [input.dataset.res]: parseAmount(input.value) };
+            });
+        });
+        return bodies;
+    }
+
+    function renderAutoDefenseStatus() {
+        const el = document.getElementById('cfg-autodef-status');
+        if (!el) return;
+        if (!CONFIG.autoDefense.enabled) {
+            el.textContent = 'Désactivée';
+            return;
+        }
+        const now = Date.now();
+        const active = getAllCelestialBodies().filter(b => isAutoDefenseActiveFor(b.id));
+        if (active.length === 0) {
+            el.textContent = 'Aucune planète configurée (seuil + au moins une défense)';
+            return;
+        }
+        const next = active
+            .map(b => ({ b, at: getAutoDefenseNextAt(b.id, now) }))
+            .sort((x, y) => x.at - y.at)[0];
+        el.textContent = `${active.length} planète(s) suivie(s) · prochain passage : ${next.b.name} [${next.b.coords}] ${next.at <= now ? 'maintenant' : `vers ${formatClock(next.at)}`}`;
+    }
+
     function isLoggedIn() {
         return !!document.querySelector('#countColonies');
     }
@@ -5543,6 +6085,7 @@
             checkAlerts();
             checkExpeditions();
             await checkBuildQueues();
+            await checkAutoDefense();
         }, CONFIG.expeditionCheckInterval);
     }
 
@@ -5567,6 +6110,7 @@
         setInterval(renderIdleCard, 1000);
         watchPageResources();
         initBuildQueueUI();
+        recordDefenseResourcesHere();
 
         if (!CONFIG.discordWebhook) {
             console.log('[Monitor] ⚠️ Webhook Discord non configuré : ouvrez le panneau ⚙️ pour le renseigner');
@@ -5632,6 +6176,15 @@
             return;
         }
 
+        const defenseState = loadDefenseState();
+        if (defenseState && defenseState.active) {
+            buildLog('🏰 Reprise de la défense automatique...');
+            await processDefenseState();
+            if (isActionInProgress()) {
+                return;
+            }
+        }
+
         const buildState = loadBuildState();
         if (buildState && buildState.active) {
             buildLog('Reprise de la file de construction...');
@@ -5662,6 +6215,7 @@
             checkExpeditions();
             refreshBuildEstimateHere();
             await checkBuildQueues(true);
+            await checkAutoDefense();
             scheduleNextBuildCheck();
             startExpeditionChecker();
             scheduleNextClick();
