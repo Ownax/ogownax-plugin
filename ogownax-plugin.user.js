@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.23.0
+// @version      1.23.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3450,7 +3450,7 @@
         document.getElementById('cfg-discovery-run').addEventListener('click', async () => {
             const btn = document.getElementById('cfg-discovery-run');
             if (!CONFIG.discovery.enabled) {
-                btn.textContent = '⚠️ Activez et sauvegardez d\'abord';
+                btn.textContent = '⚠️ Cochez « Lancer les découvertes » puis sauvegardez';
                 setTimeout(() => { btn.textContent = '🔭 Lancer maintenant'; }, 3000);
                 return;
             }
@@ -3459,12 +3459,17 @@
             // Clic de votre part : pas d'attente d'inactivité
             const previousIdle = CONFIG.idle.enabled;
             CONFIG.idle.enabled = false;
+            let result = null;
             try {
-                await runDiscovery(true);
+                result = await runDiscovery(true);
+            } catch (e) {
+                result = `Erreur : ${e.message}`;
             } finally {
                 CONFIG.idle.enabled = previousIdle;
                 btn.disabled = false;
-                btn.textContent = '🔭 Lancer maintenant';
+                btn.textContent = `🔭 ${result || 'Terminé'}`;
+                renderDiscoveryStatus();
+                setTimeout(() => { btn.textContent = '🔭 Lancer maintenant'; }, 6000);
             }
         });
     }
@@ -5787,8 +5792,9 @@
         const match = String(text || '').trim().match(/^(\d+)\s*:\s*(\d+)$/);
         if (!match) return null;
         const galaxy = parseInt(match[1]);
-        const system = parseInt(match[2]);
-        if (galaxy < 1 || system < 1 || system > SYSTEMS_PER_GALAXY) return null;
+        if (galaxy < 1) return null;
+        // « 3:0 » = début de la galaxie, « 3:999 » = fin
+        const system = Math.min(SYSTEMS_PER_GALAXY, Math.max(1, parseInt(match[2])));
         return { galaxy, system };
     }
 
@@ -5870,30 +5876,37 @@
         } catch (e) {}
     }
 
+    function getDiscoveryConfigError() {
+        if (!getDiscoveryRange()) return 'Plage invalide : saisissez « galaxie:système », ex. 3:1 → 3:100';
+        if (!getDiscoveryOrigin()) return 'Planète de départ non choisie';
+        return null;
+    }
+
     async function runDiscovery(force = false) {
-        if (!CONFIG.discovery.enabled || discoveryRunning) return;
-        if (isActionInProgress()) return;
+        if (!CONFIG.discovery.enabled) return 'Découverte désactivée (cochez et sauvegardez)';
+        if (discoveryRunning) return 'Passage déjà en cours';
+        if (isActionInProgress()) return 'Une autre action du plugin est en cours, réessayez dans un instant';
         if (!isUserIdle()) {
             runWhenIdle('discovery', () => runDiscovery(force));
-            return;
+            return 'En attente de votre inactivité';
         }
         const state = loadDiscoveryState();
         const interval = Math.max(1, CONFIG.discovery.interval || 5) * 60 * 1000;
-        if (!force && state.lastRunAt && Date.now() - state.lastRunAt < interval) return;
+        if (!force && state.lastRunAt && Date.now() - state.lastRunAt < interval) return null;
 
-        const range = getDiscoveryRange();
-        if (!range) {
-            buildLog('🔭 Découverte : plage de systèmes non configurée');
-            return;
-        }
-        const origin = getDiscoveryOrigin();
-        if (!origin) {
-            buildLog('🔭 Découverte : planète de départ non choisie (ou introuvable)');
-            state.lastResult = 'Planète de départ non choisie';
-            saveDiscoveryState(state);
+        const configError = getDiscoveryConfigError();
+        if (configError) {
+            // Journalisé une seule fois tant que le réglage ne change pas
+            if (state.lastResult !== configError) {
+                buildLog(`🔭 Découverte : ${configError}`);
+                state.lastResult = configError;
+                saveDiscoveryState(state);
+            }
             renderDiscoveryStatus();
-            return;
+            return configError;
         }
+        const range = getDiscoveryRange();
+        const origin = getDiscoveryOrigin();
         const currentId = getCurrentPlanetId();
         let switched = false;
 
@@ -5908,7 +5921,7 @@
             let allowed = getDiscoveryAllowance(active, usedSlots, maxSlots);
             if (allowed <= 0) {
                 result = `Rien à lancer (${active} en vol, slots ${usedSlots ?? '?'}/${maxSlots ?? '?'})`;
-                return;
+                return result;
             }
 
             const size = range.end - range.start + 1;
@@ -5999,6 +6012,7 @@
             }
             renderDiscoveryStatus();
         }
+        return result;
     }
 
     function renderDiscoveryStatus() {
@@ -6016,7 +6030,9 @@
                 parts.push(`reprise en ${c.galaxy}:${c.system}`);
             }
         }
-        if (state.lastRunAt) parts.push(`dernier passage ${formatClock(state.lastRunAt)} : ${state.lastResult || ''}`);
+        const configError = CONFIG.discovery.enabled ? getDiscoveryConfigError() : null;
+        if (configError) parts.push(`⚠️ ${configError}`);
+        else if (state.lastRunAt) parts.push(`dernier passage ${formatClock(state.lastRunAt)} : ${state.lastResult || ''}`);
         el.textContent = parts.join(' · ') || 'Jamais lancée';
     }
 

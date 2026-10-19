@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.23.1
+
+- 🔭 Découverte : une plage commençant à « 3:0 » était refusée (le système 0 n'existe pas) et rien ne se lançait. 0 vaut maintenant le premier système (et un numéro trop grand, le dernier).
+- Motif affiché dans l'onglet et sur le bouton « Lancer maintenant » quand rien ne part (plage invalide, planète de départ manquante, autre action en cours, limite atteinte…), au lieu du seul journal.
+
 ## 1.23.0
 
 - 🔭 Découverte : **planète/lune de départ obligatoire**. Les requêtes partent de ce corps (il paie le coût), puis le plugin revient sur la planète affichée à la fin du passage.
