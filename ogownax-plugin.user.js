@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.25.0
+// @version      1.25.1
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -3518,7 +3518,7 @@
                         <label>Espionnage</label>
                         <input type="number" id="cfg-cd-espionage" min="1">
                     </div>
-                    <div class="config-group">
+                    <div class="config-group" id="cfg-cd-expedition-group">
                         <label>Expédition</label>
                         <input type="number" id="cfg-cd-expedition" min="1">
                     </div>
@@ -3655,6 +3655,7 @@
             btn.textContent = ok ? '✅ Webhook OK' : '❌ Échec (voir console)';
             setTimeout(() => { btn.textContent = '📨 Tester le webhook'; }, 3000);
         });
+        document.getElementById('cfg-expedition-launch-alerts').addEventListener('change', updateExpeditionCooldownVisibility);
         document.getElementById('cfg-report-send').addEventListener('click', async () => {
             const btn = document.getElementById('cfg-report-send');
             if (!CONFIG.discordWebhook) {
@@ -4045,6 +4046,7 @@
         document.getElementById('cfg-report-enabled').checked = CONFIG.expeditionReport.enabled;
         document.getElementById('cfg-report-interval').value = CONFIG.expeditionReport.interval;
         document.getElementById('cfg-expedition-launch-alerts').checked = !!CONFIG.expeditionLaunchAlerts;
+        updateExpeditionCooldownVisibility();
         renderExpeditionReportStatus();
         document.getElementById('cfg-auto-launch').checked = CONFIG.autoLaunchExpeditions;
         document.getElementById('cfg-expedition-key').value = CONFIG.expeditionKey === 's' ? 's' : 'l';
@@ -6638,6 +6640,13 @@
             saveExpeditionReportState(state);
         }
         return { ok, report };
+    }
+
+    // Le délai « Expédition » ne vaut que pour les messages de lancement : masqué s'ils sont désactivés
+    function updateExpeditionCooldownVisibility() {
+        const group = document.getElementById('cfg-cd-expedition-group');
+        const checkbox = document.getElementById('cfg-expedition-launch-alerts');
+        if (group && checkbox) group.style.display = checkbox.checked ? '' : 'none';
     }
 
     function renderExpeditionReportStatus() {

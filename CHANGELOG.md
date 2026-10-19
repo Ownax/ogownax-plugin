@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.25.1
+
+- ⚙️ Alertes : le délai minimum « Expédition » n'est affiché que si « Message à chaque lancement d'expédition » est coché (il ne sert qu'à ces messages ; le bilan a son propre intervalle).
+
 ## 1.25.0
 
 - 📊 Bilan Discord périodique des expéditions (⚙️ → Alertes, toutes les 3600 s par défaut) :
