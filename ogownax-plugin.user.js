@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.23.3
+// @version      1.24.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -36,7 +36,8 @@
         expeditionCheckInterval: 60 * 1000,
         // Raccourci OGame appuyé sur la page Flotte pour composer l'expédition
         expeditionKey: 'l',
-        // 'key' : touche L/S ; 'template' : flotte d'expédition enregistrée (nom ci-dessous)
+        // 'key' : touche L/S ; 'template' : flotte d'expédition enregistrée (nom ci-dessous), via la page Flotte ;
+        // 'direct' : même flotte, envoyée par requête (bouton « Envoyer » de la case 16 de la Galaxie), sans changer de page
         expeditionMode: 'key',
         expeditionTemplate: '',
         expeditionStartHour: null,
@@ -2250,6 +2251,17 @@
             return;
         }
 
+        // Envoi direct : par requêtes, sans navigation (planètes en échec récent écartées un moment)
+        if (CONFIG.expeditionMode === 'direct') {
+            if (isActionInProgress()) return;
+            const eligible = getDirectEligibleBodies(bodiesWithMissing);
+            if (eligible.length === 0) return;
+            const count = eligible.reduce((sum, b) => sum + b.missing, 0);
+            console.log(`[Monitor] Envoi direct de ${count} expédition(s)...`);
+            launchExpeditionsDirect(eligible);
+            return;
+        }
+
         const totalMissing = bodiesWithMissing.reduce((sum, b) => sum + b.missing, 0);
         const planetCount = bodiesWithMissing.filter(b => b.type === 'planet').length;
         const moonCount = bodiesWithMissing.filter(b => b.type === 'moon').length;
@@ -2300,6 +2312,12 @@
 
         if (!window.confirm(confirmMsg)) return;
 
+        if (CONFIG.expeditionMode === 'direct') {
+            closeConfigPanel();
+            await launchExpeditionsDirect(bodiesWithMissing);
+            return;
+        }
+
         const firstBody = bodiesWithMissing[0];
 
         const state = {
@@ -2316,6 +2334,168 @@
         closeConfigPanel();
 
         goToCelestialBody(firstBody.id, firstBody.type);
+    }
+
+    // ===== Expéditions en envoi direct (bouton « Envoyer » de la case 16 de la Galaxie) =====
+
+    let expeditionDirectRunning = false;
+    // Après un échec, pas de nouvel essai à chaque vérification (une par minute) : par planète/lune, et global
+    const DIRECT_RETRY_DELAY = 15 * 60 * 1000;
+    const directSkipUntil = {};
+    let directRetryAt = 0;
+
+    function getDirectEligibleBodies(bodies) {
+        if (Date.now() < directRetryAt) return [];
+        return bodies.filter(b => !(directSkipUntil[b.key] > Date.now()));
+    }
+
+    // Variable JS d'une page OGame, écrite sur une ligne : « var name = [...]; »
+    function readPageJsonVar(html, name) {
+        const match = html.match(new RegExp(`var ${name}\\s*=\\s*(.+?);?\\s*$`, 'm'));
+        if (!match) return null;
+        try {
+            return JSON.parse(match[1]);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Vaisseaux présents et flottes d'expédition enregistrées d'une planète/lune (elle devient la planète courante du serveur)
+    async function fetchFleetPage(bodyId) {
+        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&cp=${bodyId}`, { credentials: 'include' });
+        const html = await response.text();
+        const list = readPageJsonVar(html, 'shipsOnPlanet');
+        const ships = {};
+        (list || []).forEach(s => { ships[s.id] = Number(s.number) || 0; });
+        const templates = (readPageJsonVar(html, 'expeditionFleetTemplates') || []).filter(t => t && t.id && t.ships);
+        return { ok: Array.isArray(list), ships, templates };
+    }
+
+    // La liste des événements est écrite dans la page à son chargement : on la recharge pour voir les nouvelles flottes
+    // (sinon l'expédition paraîtrait toujours manquante et serait relancée)
+    async function refreshEventList() {
+        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=overview`, { credentials: 'include' });
+        const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const fresh = doc.querySelector('#eventContent');
+        const current = document.querySelector('#eventContent');
+        if (!fresh || !current) throw new Error('liste des événements introuvable');
+        current.innerHTML = fresh.innerHTML;
+        try {
+            const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            if (typeof page.getAjaxEventbox === 'function') page.getAjaxEventbox();
+        } catch (e) {}
+    }
+
+    // Envoie les expéditions manquantes par requête, sans navigation. Retourne le nombre envoyé.
+    async function launchExpeditionsDirect(bodies) {
+        if (expeditionDirectRunning) return 0;
+        expeditionDirectRunning = true;
+        const currentId = getCurrentPlanetId();
+        const [currentGalaxy, currentSystem] = (getCurrentPlanetCoords() || '').split(':');
+        const wanted = (CONFIG.expeditionTemplate || '').trim().toLowerCase();
+        let switched = false;
+        let sent = 0;
+        const problems = [];
+        try {
+            if (!wanted) throw new Error('aucune flotte enregistrée choisie (⚙️ → Expéditions)');
+            bodiesLoop:
+            for (const body of bodies) {
+                const label = `${body.type === 'moon' ? '🌙' : '🌍'} [${body.coords}]`;
+                const fleet = await fetchFleetPage(body.id);
+                switched = switched || body.id !== currentId;
+                const skipBody = (reason) => {
+                    problems.push(`${label} : ${reason}`);
+                    directSkipUntil[body.key] = Date.now() + DIRECT_RETRY_DELAY;
+                };
+                if (!fleet.ok) {
+                    skipBody('page Flotte illisible');
+                    continue;
+                }
+                if (fleet.templates.length > 0) {
+                    localStorage.setItem(FLEET_TEMPLATES_KEY, JSON.stringify(fleet.templates.map(t => t.name)));
+                }
+                const template = fleet.templates.find(t => String(t.name).trim().toLowerCase() === wanted);
+                if (!template) throw new Error(`flotte enregistrée « ${CONFIG.expeditionTemplate} » introuvable`);
+                const [galaxy, system] = body.coords.split(':');
+
+                for (let i = 0; i < body.missing; i++) {
+                    // Vous reprenez la main : la planète courante du serveur doit redevenir celle affichée
+                    if (!isUserIdle()) {
+                        problems.push('interrompu (activité détectée)');
+                        break bodiesLoop;
+                    }
+                    // OGame envoie ce qu'il y a quand la flotte est incomplète : on vérifie avant
+                    const lacking = Object.entries(template.ships)
+                        .filter(([id, n]) => (fleet.ships[id] || 0) < n)
+                        .map(([id, n]) => `${(n - (fleet.ships[id] || 0)).toLocaleString('fr-FR')} ${SHIP_NAMES[id] || id}`);
+                    if (lacking.length > 0) {
+                        skipBody(`manque ${lacking.join(', ')}`);
+                        break;
+                    }
+                    const data = await fetchSolarSystem(galaxy, system, body.id);
+                    const sys = data.system || {};
+                    if (Number.isInteger(sys.usedFleetSlots) && Number.isInteger(sys.maximumFleetSlots)
+                        && sys.usedFleetSlots >= sys.maximumFleetSlots) {
+                        problems.push(`plus de slot de flotte libre (${sys.usedFleetSlots}/${sys.maximumFleetSlots})`);
+                        directRetryAt = Date.now() + DIRECT_RETRY_DELAY;
+                        break bodiesLoop;
+                    }
+                    if (sys.canExpedition === false) {
+                        skipBody('expédition impossible pour le moment');
+                        break;
+                    }
+                    await wait(500 + Math.random() * 700);
+                    const params = {
+                        mission: 15, galaxy, system, position: 16, type: 1, shipCount: 0,
+                        token: data.newAjaxToken || data.token,
+                        speed: Math.round((template.fleetSpeed || 100) / 10),
+                        holdingtime: template.expeditionTime || 1,
+                        expeditionFleetTemplateId: template.id,
+                    };
+                    Object.entries(template.ships).forEach(([id, n]) => { params[`am${id}`] = n; });
+                    const res = await ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&action=miniFleet&asJson=1&cp=${body.id}`, params);
+                    setPageAjaxToken(res.newAjaxToken);
+                    if (res.success && res.response && res.response.success) {
+                        sent++;
+                        Object.entries(template.ships).forEach(([id, n]) => { fleet.ships[id] = (fleet.ships[id] || 0) - n; });
+                        console.log(`[Monitor] Expédition envoyée (direct) depuis ${body.coords} : ${res.response.shipsSent} vaisseau(x)`);
+                        notifyDiscord(`🚀 **Expédition lancée** (envoi direct) depuis ${label} (${i + 1}/${body.missing}) · « ${template.name} »`);
+                    } else {
+                        skipBody(getOgameErrorMessage(res));
+                        break;
+                    }
+                }
+            }
+        } catch (e) {
+            problems.push(e.message);
+            directRetryAt = Date.now() + DIRECT_RETRY_DELAY;
+        } finally {
+            // Retour sur la planète affichée (sinon la prochaine page ouverte serait la dernière planète de départ)
+            if (switched && currentId && currentGalaxy) {
+                try {
+                    const back = await fetchSolarSystem(currentGalaxy, currentSystem, currentId);
+                    setPageAjaxToken(back.newAjaxToken || back.token);
+                } catch (e) {
+                    console.log('[Monitor] Retour sur la planète affichée impossible:', e);
+                }
+            }
+            if (sent > 0) {
+                try {
+                    await refreshEventList();
+                } catch (e) {
+                    // Liste non rafraîchie : on recharge la page plutôt que de risquer un double envoi
+                    console.log('[Monitor] Liste des événements non rafraîchie, rechargement:', e);
+                    window.location.reload();
+                }
+            }
+            expeditionDirectRunning = false;
+        }
+        if (problems.length > 0) {
+            console.log('[Monitor] Envoi direct :', problems);
+            notifyDiscord(`⚠️ **Expéditions (envoi direct)** : ${problems.join(' · ')}`);
+        }
+        showLaunchStatus(sent > 0 ? `✅ ${sent} expédition(s) lancée(s)${problems.length ? ` · ${problems[0]}` : ''}` : `Erreur: ${problems[0] || 'rien envoyé'}`, sent === 0);
+        return sent;
     }
 
     function parseFleetDetails(tooltipHtml) {
@@ -3140,7 +3320,9 @@
                     <select id="cfg-expedition-mode">
                         <option value="key">Touche L / S (raccourci OGame)</option>
                         <option value="template">Flotte d'expédition enregistrée</option>
+                        <option value="direct">Flotte enregistrée — envoi direct (sans changer de page)</option>
                     </select>
+                    <div class="hint" id="cfg-expedition-direct-hint">Comme le bouton « Envoyer » de la case 16 dans la Galaxie : une requête par expédition, depuis chaque planète/lune, sans navigation. Une planète dont la flotte enregistrée n'est pas complète est sautée.</div>
                 </div>
 
                 <div class="config-group" id="cfg-expedition-key-group">
@@ -3795,8 +3977,11 @@
         const mode = document.getElementById('cfg-expedition-mode')?.value;
         const keyGroup = document.getElementById('cfg-expedition-key-group');
         const templateGroup = document.getElementById('cfg-expedition-template-group');
-        if (keyGroup) keyGroup.style.display = mode === 'template' ? 'none' : '';
-        if (templateGroup) templateGroup.style.display = mode === 'template' ? '' : 'none';
+        const usesTemplate = mode === 'template' || mode === 'direct';
+        if (keyGroup) keyGroup.style.display = usesTemplate ? 'none' : '';
+        if (templateGroup) templateGroup.style.display = usesTemplate ? '' : 'none';
+        const directHint = document.getElementById('cfg-expedition-direct-hint');
+        if (directHint) directHint.style.display = mode === 'direct' ? '' : 'none';
     }
 
     function loadFormValues() {
@@ -3805,7 +3990,7 @@
         document.getElementById('cfg-webhook').value = CONFIG.discordWebhook;
         document.getElementById('cfg-auto-launch').checked = CONFIG.autoLaunchExpeditions;
         document.getElementById('cfg-expedition-key').value = CONFIG.expeditionKey === 's' ? 's' : 'l';
-        document.getElementById('cfg-expedition-mode').value = CONFIG.expeditionMode === 'template' ? 'template' : 'key';
+        document.getElementById('cfg-expedition-mode').value = ['template', 'direct'].includes(CONFIG.expeditionMode) ? CONFIG.expeditionMode : 'key';
         renderExpeditionTemplateOptions();
         updateExpeditionModeVisibility();
         document.getElementById('cfg-expedition-start-hour').value = CONFIG.expeditionStartHour !== null ? CONFIG.expeditionStartHour : '';
@@ -3915,7 +4100,7 @@
             expeditionsPerBody,
             autoLaunchExpeditions: document.getElementById('cfg-auto-launch').checked,
             expeditionKey: document.getElementById('cfg-expedition-key').value === 's' ? 's' : 'l',
-            expeditionMode: document.getElementById('cfg-expedition-mode').value === 'template' ? 'template' : 'key',
+            expeditionMode: ['template', 'direct'].includes(document.getElementById('cfg-expedition-mode').value) ? document.getElementById('cfg-expedition-mode').value : 'key',
             expeditionTemplate: document.getElementById('cfg-expedition-template').value || '',
             expeditionStartHour,
             expeditionEndHour,
@@ -4067,7 +4252,7 @@
     let launchLockUntil = 0;
 
     function isActionInProgress() {
-        return buildEvaluating || discoveryRunning || Date.now() < launchLockUntil || isNavigationInProgress();
+        return buildEvaluating || discoveryRunning || expeditionDirectRunning || Date.now() < launchLockUntil || isNavigationInProgress();
     }
 
     // Action enregistrée qui se poursuit de page en page (lancement d'expéditions, panic, repli, file, défense)

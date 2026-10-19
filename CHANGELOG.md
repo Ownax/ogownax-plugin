@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.24.0
+
+- 🚀 Expéditions : nouveau mode « Flotte enregistrée — envoi direct (sans changer de page) » (⚙️ → Expéditions → Composition de la flotte). Comme le bouton « Envoyer » de la case 16 dans la Galaxie : une requête par expédition (`fleetdispatch&action=miniFleet`), depuis chaque planète/lune, sans navigation. Le plugin revient ensuite sur la planète affichée et rafraîchit la liste des événements.
+- Vaisseaux vérifiés avant chaque envoi : OGame enverrait une flotte incomplète au lieu de refuser, donc une planète/lune à qui il manque des vaisseaux est sautée (signalée sur Discord) et réessayée 15 min plus tard. Plus de slot libre : nouvel essai dans 15 min.
+- Envoi interrompu dès que vous reprenez la main ; pas d'envoi pendant une découverte ou une file en cours (et inversement).
+- Les modes « Touche L / S » et « Flotte d'expédition enregistrée » (page Flotte) restent inchangés.
+
 ## 1.23.3
 
 - 🏗️ Files de construction : un lancement pouvait se perdre. OGame lance la construction sur la planète « courante » du serveur, sans préciser laquelle ; si le plugin naviguait vers une autre planète (autre file, défense, clic aléatoire) ou si une découverte changeait la planète courante juste après le clic, la construction ne partait pas, ou partait ailleurs. Après un lancement, plus aucune navigation ni découverte pendant 8 s (le temps qu'OGame recharge la page).
