@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.22.0
+// @version      1.23.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -84,6 +84,8 @@
         // Découverte de formes de vie : plage « galaxie:système », limites cumulables (0 = ignorée)
         discovery: {
             enabled: false,
+            // Planète/lune de départ (id) : obligatoire
+            originId: '',
             keepFreeSlots: 0,
             maxActive: 0,
             from: '',
@@ -394,6 +396,7 @@
         const panel = document.getElementById('ogame-plugin-panel');
         if (panel) panel.style.display = 'none';
         document.getElementById('ogame-plugin-btn')?.classList.remove('open');
+        document.getElementById('ogame-plugin-dock')?.classList.remove('cfg-open');
     }
 
     function createToolbar() {
@@ -2556,8 +2559,10 @@
                 border-radius: 8px;
                 box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6);
                 padding: 15px;
-                width: 470px;
+                width: 680px;
+                max-width: calc(100vw - 20px);
                 overflow-y: auto;
+                overflow-x: hidden;
                 color: #9fc3d6;
                 font-family: Verdana, Arial, sans-serif;
                 font-size: 11px;
@@ -2705,22 +2710,48 @@
                 width: 100%;
                 margin-top: 4px;
             }
+            #ogame-plugin-panel .cfg-body {
+                display: flex;
+                gap: 12px;
+                align-items: flex-start;
+            }
+            /* Onglets en colonne : autant d'onglets que nécessaire sans défilement horizontal */
             #ogame-plugin-panel .cfg-tabs {
                 display: flex;
+                flex-direction: column;
                 gap: 3px;
-                margin-bottom: 12px;
-                border-bottom: 1px solid #3c5a6a;
+                flex: 0 0 128px;
+                position: sticky;
+                top: 0;
             }
             #ogame-plugin-panel .cfg-tabs button {
-                flex: 1;
-                padding: 6px 2px;
+                flex: none;
+                width: 100%;
+                padding: 7px 8px;
                 background: #0a1520;
                 color: #6a9aaa;
                 border: 1px solid #2c4a5a;
-                border-bottom: none;
-                border-radius: 4px 4px 0 0;
-                font-size: 10px;
+                border-radius: 4px;
+                font-size: 11px;
+                text-align: left;
                 white-space: nowrap;
+            }
+            #ogame-plugin-panel .cfg-content {
+                flex: 1;
+                min-width: 0;
+            }
+            #ogame-plugin-panel .cfg-content input[type="text"],
+            #ogame-plugin-panel .cfg-content input[type="number"],
+            #ogame-plugin-panel .cfg-content select,
+            #ogame-plugin-panel .cfg-content textarea {
+                max-width: 100%;
+                box-sizing: border-box;
+            }
+            /* Panneau ouvert : il prend toute la hauteur de la colonne (file et cartes masquées) */
+            #ogame-plugin-dock.cfg-open #ogame-plugin-buildqueue,
+            #ogame-plugin-dock.cfg-open #ogame-plugin-idle,
+            #ogame-plugin-dock.cfg-open #ogame-plugin-timer {
+                display: none !important;
             }
             #ogame-plugin-panel .cfg-tabs button:hover {
                 color: #9fc3d6;
@@ -3003,15 +3034,18 @@
         panel.innerHTML = `
             <h3>⚙️ OgOwnax Plugin <span class="plugin-version">v${GM_info.script.version}</span></h3>
 
+            <div class="cfg-body">
             <div class="cfg-tabs">
-                <button data-tab="defense">🛡️ Défense</button>
-                <button data-tab="expeditions">🚀 Expéditions</button>
-                <button data-tab="build">🏗️ Construction</button>
+                <button data-tab="defense">🛡️ Panic / repli</button>
                 <button data-tab="autodef">🏰 Auto-défense</button>
-                <button data-tab="alerts">🔔 Alertes</button>
+                <button data-tab="expeditions">🚀 Expéditions</button>
+                <button data-tab="discovery">🔭 Découverte</button>
+                <button data-tab="build">🏗️ Construction</button>
                 <button data-tab="stats">📊 Stats</button>
+                <button data-tab="alerts">🔔 Alertes</button>
                 <button data-tab="general">⚙️ Général</button>
             </div>
+            <div class="cfg-content">
 
             <div class="cfg-tab" data-tab="defense">
                 <div class="section-title panic">🚨 Panic (bouton global)</div>
@@ -3134,7 +3168,9 @@
                     </div>
                     <div class="hint">Laisser vide pour aucune limite (ex. : 8 à 22 pour 8h-22h)</div>
                 </div>
+            </div>
 
+            <div class="cfg-tab" data-tab="discovery">
                 <div class="section-title">🔭 Découverte de formes de vie</div>
 
                 <div class="config-group">
@@ -3142,7 +3178,13 @@
                         <input type="checkbox" id="cfg-discovery-enabled">
                         Lancer les découvertes automatiquement
                     </label>
-                    <div class="hint">Envoie un vaisseau d'exploration sur chaque position découvrable de la plage, depuis la planète affichée (sans changer de page). Attend votre inactivité.</div>
+                    <div class="hint">Envoie un vaisseau d'exploration sur chaque position découvrable de la plage, sans changer de page. Attend votre inactivité.</div>
+                </div>
+
+                <div class="config-group">
+                    <label>Planète/lune de départ</label>
+                    <select id="cfg-discovery-origin"></select>
+                    <div class="hint">Les vaisseaux d'exploration partent d'ici et elle paie le coût. Le plugin y bascule le temps de l'envoi, puis revient sur la planète affichée.</div>
                 </div>
 
                 <div class="cfg-grid">
@@ -3334,6 +3376,9 @@
                 </div>
             </div>
 
+            </div>
+            </div>
+
             <div class="btn-group">
                 <button class="btn-save" id="cfg-save">💾 Sauvegarder</button>
                 <button class="btn-reset" id="cfg-reset">🔄 Reset</button>
@@ -3359,6 +3404,7 @@
         document.getElementById('ogame-plugin-btn').addEventListener('click', () => {
             panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
             document.getElementById('ogame-plugin-btn').classList.toggle('open', panel.style.display === 'block');
+            dock.classList.toggle('cfg-open', panel.style.display === 'block');
             if (panel.style.display === 'block') {
                 loadFormValues();
             }
@@ -3781,6 +3827,9 @@
         document.getElementById('cfg-idle-enabled').checked = CONFIG.idle.enabled;
         document.getElementById('cfg-idle-delay').value = CONFIG.idle.delay;
         document.getElementById('cfg-discovery-enabled').checked = CONFIG.discovery.enabled;
+        document.getElementById('cfg-discovery-origin').innerHTML = '<option value="">-- Choisir --</option>'
+            + getAllCelestialBodies().map(b => `<option value="${b.id}">${b.type === 'moon' ? '🌙 Lune' : `🪐 ${b.name}`} [${b.coords}]</option>`).join('');
+        document.getElementById('cfg-discovery-origin').value = CONFIG.discovery.originId || '';
         document.getElementById('cfg-discovery-from').value = CONFIG.discovery.from || '';
         document.getElementById('cfg-discovery-to').value = CONFIG.discovery.to || '';
         document.getElementById('cfg-discovery-keep-free').value = CONFIG.discovery.keepFreeSlots || 0;
@@ -3901,6 +3950,7 @@
             },
             discovery: {
                 enabled: document.getElementById('cfg-discovery-enabled').checked,
+                originId: document.getElementById('cfg-discovery-origin').value,
                 from: document.getElementById('cfg-discovery-from').value.trim(),
                 to: document.getElementById('cfg-discovery-to').value.trim(),
                 keepFreeSlots: Math.max(0, parseInt(document.getElementById('cfg-discovery-keep-free').value) || 0),
@@ -5776,8 +5826,14 @@
         return response.json();
     }
 
-    async function fetchSolarSystem(galaxy, system) {
-        return ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=galaxy&action=fetchSolarSystemData&asJson=1`, { galaxy, system });
+    // cp : planète/lune pour laquelle OGame répond (elle devient la planète courante côté serveur)
+    async function fetchSolarSystem(galaxy, system, cp = null) {
+        return ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=galaxy&action=fetchSolarSystemData&asJson=1${cp ? `&cp=${cp}` : ''}`, { galaxy, system });
+    }
+
+    function getDiscoveryOrigin() {
+        const id = String(CONFIG.discovery.originId || '');
+        return id ? getAllCelestialBodies().find(b => b.id === id) || null : null;
     }
 
     // Découvertes en vol : page Mouvements de flotte (une ligne par flotte, aller comme retour)
@@ -5830,6 +5886,16 @@
             buildLog('🔭 Découverte : plage de systèmes non configurée');
             return;
         }
+        const origin = getDiscoveryOrigin();
+        if (!origin) {
+            buildLog('🔭 Découverte : planète de départ non choisie (ou introuvable)');
+            state.lastResult = 'Planète de départ non choisie';
+            saveDiscoveryState(state);
+            renderDiscoveryStatus();
+            return;
+        }
+        const currentId = getCurrentPlanetId();
+        let switched = false;
 
         discoveryRunning = true;
         const sent = [];
@@ -5852,7 +5918,8 @@
             let stop = false;
             while (!stop && allowed > 0 && scanned < Math.min(size, DISCOVERY_MAX_SYSTEMS_PER_RUN)) {
                 const { galaxy, system } = systemFromIndex(cursor);
-                const data = await fetchSolarSystem(galaxy, system);
+                const data = await fetchSolarSystem(galaxy, system, origin.id);
+                switched = switched || origin.id !== currentId;
                 scanned++;
                 token = data.newAjaxToken || data.token || token;
                 const sys = data.system || {};
@@ -5866,7 +5933,7 @@
                 for (const position of positions) {
                     if (allowed <= 0) break;
                     await wait(400 + Math.random() * 600);
-                    const res = await ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&asJson=1`,
+                    const res = await ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&asJson=1&cp=${origin.id}`,
                         { galaxy, system, position, token });
                     token = res.newAjaxToken || token;
                     const response = res.response || {};
@@ -5906,6 +5973,15 @@
             result = `Erreur : ${e.message}`;
             buildLog('🔭 Découverte : échec', e);
         } finally {
+            // Retour sur la planète affichée (sinon la prochaine page ouverte serait la planète de départ)
+            if (switched && currentId) {
+                try {
+                    const back = await fetchSolarSystem(range.from.galaxy, range.from.system, currentId);
+                    setPageAjaxToken(back.newAjaxToken || back.token);
+                } catch (e) {
+                    buildLog('🔭 Découverte : retour sur la planète affichée impossible', e);
+                }
+            }
             discoveryRunning = false;
             state.lastRunAt = Date.now();
             state.lastResult = result;
@@ -5932,7 +6008,9 @@
         const range = getDiscoveryRange();
         const parts = [];
         if (range) {
-            parts.push(`Plage ${range.from.galaxy}:${range.from.system} → ${range.to.galaxy}:${range.to.system}`);
+            const origin = getDiscoveryOrigin();
+            parts.push(`Départ ${origin ? `${origin.type === 'moon' ? 'Lune' : origin.name} [${origin.coords}]` : 'non choisi'}`);
+            parts.push(`plage ${range.from.galaxy}:${range.from.system} → ${range.to.galaxy}:${range.to.system}`);
             if (Number.isInteger(state.cursor)) {
                 const c = systemFromIndex(state.cursor);
                 parts.push(`reprise en ${c.galaxy}:${c.system}`);

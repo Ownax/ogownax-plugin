@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.23.0
+
+- 🔭 Découverte : **planète/lune de départ obligatoire**. Les requêtes partent de ce corps (il paie le coût), puis le plugin revient sur la planète affichée à la fin du passage.
+- 🔭 Découverte dans son propre onglet. Comptage des découvertes en vol confirmé en jeu (page Mouvements, mission 18, une ligne par flotte).
+- Panneau de configuration : **onglets en colonne à gauche** (plus de défilement horizontal), panneau élargi à 680 px, et la file de construction, l'idle et le minuteur sont masqués tant qu'il est ouvert pour lui laisser toute la hauteur.
+
 ## 1.22.0
 
 - **🔭 Découverte de formes de vie automatique** (onglet 🚀 Expéditions, désactivée par défaut) : envoie un vaisseau d'exploration sur chaque position découvrable d'une plage de systèmes (ex. 4:100 → 4:300), par les mêmes requêtes que la page Galaxie, sans changer de page.
