@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.23.1
+// @version      1.23.2
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -5811,6 +5811,28 @@
         return { galaxy: Math.floor(i / SYSTEMS_PER_GALAXY) + 1, system: (i % SYSTEMS_PER_GALAXY) + 1 };
     }
 
+    // « … possible dans 18h 7m 43s » / « 1j 2h » -> millisecondes (null si aucune durée)
+    function parseDiscoveryDelay(text) {
+        const units = { j: 86400, d: 86400, h: 3600, m: 60, s: 1 };
+        let seconds = 0;
+        let found = false;
+        String(text || '').replace(/(\d+)\s*([jdhms])\b/gi, (all, n, unit) => {
+            seconds += parseInt(n) * units[unit.toLowerCase()];
+            found = true;
+            return all;
+        });
+        return found ? seconds * 1000 : null;
+    }
+
+    // Message d'erreur OGame : { errors: [{ message, error }] } ou { error: { message } }
+    function getOgameErrorMessage(res) {
+        const response = (res && res.response) || {};
+        const raw = (res && res.errors && res.errors[0] && res.errors[0].message)
+            || (res && res.error && res.error.message)
+            || response.message || (res && res.message) || 'refusée';
+        return String(raw).replace(/<[^>]+>/g, ' ').replace(/#time#/g, '…').replace(/\s+/g, ' ').trim();
+    }
+
     function loadDiscoveryState() {
         return loadJson(DISCOVERY_STATE_KEY, {});
     }
@@ -5928,8 +5950,17 @@
             let cursor = Number.isInteger(state.cursor) && state.cursor >= range.start && state.cursor <= range.end ? state.cursor : range.start;
             let token = null;
             let scanned = 0;
+            let visited = 0;
             let stop = false;
-            while (!stop && allowed > 0 && scanned < Math.min(size, DISCOVERY_MAX_SYSTEMS_PER_RUN)) {
+            // Systèmes dont toutes les positions sont en attente : { index: instant de disponibilité }
+            const waitUntil = state.waitUntil || {};
+            Object.keys(waitUntil).forEach(i => { if (waitUntil[i] <= Date.now()) delete waitUntil[i]; });
+            while (!stop && allowed > 0 && visited < size && scanned < DISCOVERY_MAX_SYSTEMS_PER_RUN) {
+                visited++;
+                if (waitUntil[cursor] > Date.now()) {
+                    cursor = cursor >= range.end ? range.start : cursor + 1;
+                    continue;
+                }
                 const { galaxy, system } = systemFromIndex(cursor);
                 const data = await fetchSolarSystem(galaxy, system, origin.id);
                 switched = switched || origin.id !== currentId;
@@ -5940,9 +5971,16 @@
                 if (Number.isInteger(sys.maximumFleetSlots)) maxSlots = sys.maximumFleetSlots;
                 allowed = getDiscoveryAllowance(active, usedSlots, maxSlots);
 
-                const positions = (sys.galaxyContent || [])
-                    .filter(p => (p.availableMissions || []).some(m => m.missionType === DISCOVERY_MISSION && m.canSend))
-                    .map(p => p.position);
+                // canSend vaut true, ou un texte « … à nouveau possible dans 18h 7m » quand la position est en attente
+                const missions = (sys.galaxyContent || [])
+                    .map(p => ({ position: p.position, mission: (p.availableMissions || []).find(m => m.missionType === DISCOVERY_MISSION) }))
+                    .filter(p => p.mission);
+                const positions = missions.filter(p => p.mission.canSend === true).map(p => p.position);
+                if (positions.length === 0) {
+                    const delays = missions.map(p => parseDiscoveryDelay(p.mission.canSend)).filter(d => d !== null);
+                    // Rien d'envoyable ici : on n'y revient qu'à la fin de la plus courte attente (24 h si inconnue)
+                    waitUntil[cursor] = Date.now() + (delays.length ? Math.min(...delays) : 24 * 3600 * 1000) + 60 * 1000;
+                }
                 for (const position of positions) {
                     if (allowed <= 0) break;
                     await wait(400 + Math.random() * 600);
@@ -5957,8 +5995,10 @@
                         allowed--;
                         buildLog(`🔭 Découverte envoyée en ${galaxy}:${system}:${position}`);
                     } else {
-                        const message = String(response.message || res.message || response.error || 'refusée').replace(/<[^>]+>/g, ' ').trim();
+                        const message = getOgameErrorMessage(res);
                         buildLog(`🔭 Découverte ${galaxy}:${system}:${position} refusée : ${message}`);
+                        // Attente propre à cette position : on passe à la suivante ; sinon (ressources, slots…) on arrête
+                        if (/à nouveau possible/i.test(message)) continue;
                         result = `Arrêt : ${message}`;
                         stop = true;
                         break;
@@ -5977,10 +6017,11 @@
             }
             setPageAjaxToken(token);
             state.cursor = cursor;
+            state.waitUntil = waitUntil;
             if (!result) {
                 result = sent.length > 0
                     ? `${sent.length} lancée(s)`
-                    : (allowed > 0 ? `Aucune position découvrable sur ${scanned} système(s)` : 'Limite atteinte');
+                    : (allowed > 0 ? `Aucune position découvrable (${scanned} système(s) lu(s), ${Object.keys(waitUntil).length} en attente)` : 'Limite atteinte');
             }
         } catch (e) {
             result = `Erreur : ${e.message}`;
