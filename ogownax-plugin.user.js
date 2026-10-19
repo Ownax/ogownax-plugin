@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.23.2
+// @version      1.23.3
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -4060,7 +4060,18 @@
         localStorage.removeItem(BUILD_STATE_KEY);
     }
 
+    // Verrous propres à cet onglet : une file évaluée sur place (détail ouvert), et un lancement qui attend
+    // la réponse d'OGame. Le lancement OGame ne précise pas la planète : il vaut pour la planète « courante »
+    // du serveur, qu'une navigation ou une découverte (cp=…) ne doit pas changer entre-temps.
+    let buildEvaluating = false;
+    let launchLockUntil = 0;
+
     function isActionInProgress() {
+        return buildEvaluating || discoveryRunning || Date.now() < launchLockUntil || isNavigationInProgress();
+    }
+
+    // Action enregistrée qui se poursuit de page en page (lancement d'expéditions, panic, repli, file, défense)
+    function isNavigationInProgress() {
         const launchState = loadLaunchState();
         const panicState = loadPanicState();
         const fleeState = loadFleeState();
@@ -4820,6 +4831,8 @@
                     queue.awaitingResources = false;
                     saveBuildQueues(queues);
                     await wait(300);
+                    // Aucune navigation ni découverte tant qu'OGame n'a pas traité le lancement (il recharge la page)
+                    launchLockUntil = Date.now() + 8000;
                     upgradeBtn.click();
                     const icon = LANE_ICONS[lane];
                     notifyDiscord(`${icon} **${isResearchLane(lane) ? 'Recherche lancée' : 'Construction lancée'}** : ${item.name} niveau ${item.targetLevel} sur ${formatBodyLabel(queue)}${queue.items.length > 1 ? ` (${queue.items.length - 1} restant(s) dans la file)` : ''}`);
@@ -4847,16 +4860,20 @@
         return null;
     }
 
+    const BLOCKED_RECHECK_DELAY = 15 * 60 * 1000;
+
     // Statut et prochaine vérification quand le prochain élément ne peut pas être lancé
     function applyBuildUnavailable(queue, item, reason, estimate, recheckAt) {
         queue.status = reason;
         queue.nextCheckAt = recheckAt;
         if (estimate) {
             queue.readyAt = estimate.readyAt;
-            if (estimate.storageBlocked) {
-                queue.status = `Stockage insuffisant (${estimate.storageBlocked})`;
-            } else if (estimate.energyBlocked) {
-                queue.status = 'Énergie insuffisante';
+            if (estimate.storageBlocked || estimate.energyBlocked) {
+                queue.status = estimate.storageBlocked ? `Stockage insuffisant (${estimate.storageBlocked})` : 'Énergie insuffisante';
+                // Attendre ne suffit pas (hangar ou centrale à construire) : inutile de revenir chaque minute.
+                // Une visite de la planète revérifie aussitôt si le blocage a disparu (refreshBuildEstimateHere).
+                queue.nextCheckAt = Math.max(recheckAt, Date.now() + BLOCKED_RECHECK_DELAY);
+                queue.awaitingResources = true;
             } else if (estimate.readyAt && estimate.readyAt > Date.now()) {
                 queue.nextCheckAt = estimate.readyAt + 5000;
                 // Si ces ressources arrivent plus tôt (récompense, flotte), refreshBuildEstimateHere vérifiera aussitôt
@@ -4949,7 +4966,13 @@
         // sauf si la page est périmée (voir canEvaluateInPlace)
         if (getQueuePlanetId(key) === currentId && getQueueLane(key) === currentLane
             && (freshPage || canEvaluateInPlace(queues[key], currentLane))) {
-            const neededComponent = await evaluateBuildQueueHere(key);
+            buildEvaluating = true;
+            let neededComponent = null;
+            try {
+                neededComponent = await evaluateBuildQueueHere(key);
+            } finally {
+                buildEvaluating = false;
+            }
             if (neededComponent) navigateToBuildPage(key, neededComponent);
             return;
         }
@@ -5022,7 +5045,13 @@
             return;
         }
         await wait(500);
-        const neededComponent = await evaluateBuildQueueHere(key);
+        buildEvaluating = true;
+        let neededComponent = null;
+        try {
+            neededComponent = await evaluateBuildQueueHere(key);
+        } finally {
+            buildEvaluating = false;
+        }
         if (neededComponent) navigateToBuildPage(key, neededComponent);
     }
 
@@ -5961,6 +5990,12 @@
                     cursor = cursor >= range.end ? range.start : cursor + 1;
                     continue;
                 }
+                // Vous reprenez la main : la planète courante du serveur doit redevenir celle affichée
+                // (sinon une construction lancée à la main partirait sur la planète de départ)
+                if (!isUserIdle()) {
+                    result = `${sent.length > 0 ? `${sent.length} lancée(s), ` : ''}interrompue (activité détectée)`;
+                    break;
+                }
                 const { galaxy, system } = systemFromIndex(cursor);
                 const data = await fetchSolarSystem(galaxy, system, origin.id);
                 switched = switched || origin.id !== currentId;
@@ -5984,6 +6019,11 @@
                 for (const position of positions) {
                     if (allowed <= 0) break;
                     await wait(400 + Math.random() * 600);
+                    if (!isUserIdle()) {
+                        result = `${sent.length > 0 ? `${sent.length} lancée(s), ` : ''}interrompue (activité détectée)`;
+                        stop = true;
+                        break;
+                    }
                     const res = await ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&asJson=1&cp=${origin.id}`,
                         { galaxy, system, position, token });
                     token = res.newAjaxToken || token;
@@ -6477,7 +6517,7 @@
             return;
         }
 
-        if (isActionInProgress()) {
+        if (isNavigationInProgress()) {
             console.log('[Monitor] Action en cours, pas de clic aléatoire');
             return;
         }
@@ -6502,6 +6542,12 @@
                 console.log(`[Monitor] Activité en cours, clic aléatoire reporté de ${Math.round(wait / 1000)}s`);
                 nextClickTime = Date.now() + wait;
                 setTimeout(performClick, wait);
+                return;
+            }
+            // Lancement, découverte ou évaluation en cours dans cet onglet : changer de planète maintenant les perturberait
+            if (isActionInProgress()) {
+                nextClickTime = Date.now() + 15000;
+                setTimeout(performClick, 15000);
                 return;
             }
             clickRandomPlanet();
@@ -6621,7 +6667,7 @@
         if (defenseState && defenseState.active) {
             buildLog('🏰 Reprise de la défense automatique...');
             await processDefenseState();
-            if (isActionInProgress()) {
+            if (isNavigationInProgress()) {
                 return;
             }
         }
@@ -6630,7 +6676,7 @@
         if (buildState && buildState.active) {
             buildLog('Reprise de la file de construction...');
             await processBuildState();
-            if (isActionInProgress()) {
+            if (isNavigationInProgress()) {
                 return;
             }
         }

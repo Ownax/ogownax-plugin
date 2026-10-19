@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.23.3
+
+- 🏗️ Files de construction : un lancement pouvait se perdre. OGame lance la construction sur la planète « courante » du serveur, sans préciser laquelle ; si le plugin naviguait vers une autre planète (autre file, défense, clic aléatoire) ou si une découverte changeait la planète courante juste après le clic, la construction ne partait pas, ou partait ailleurs. Après un lancement, plus aucune navigation ni découverte pendant 8 s (le temps qu'OGame recharge la page).
+- Une découverte ne démarre plus pendant qu'une file est évaluée, et inversement ; le clic aléatoire attend aussi.
+- 🔭 Découverte interrompue dès que vous reprenez la main : la planète courante revient aussitôt à celle affichée (une construction lancée à la main ne part plus sur la planète de départ).
+- Hangar trop petit ou énergie insuffisante : revérification toutes les 15 min au lieu de chaque minute (fini les allers-retours entre planètes) ; une visite de la planète revérifie tout de suite si le blocage a disparu.
+
 ## 1.23.2
 
 - 🔭 Découverte : une position en attente renvoie un **texte** (« … à nouveau possible dans 18h 7m ») au lieu de « non » ; le plugin le prenait pour « envoyable » et se faisait refuser. Seules les positions réellement disponibles sont visées.
