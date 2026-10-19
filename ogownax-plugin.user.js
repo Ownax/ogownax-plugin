@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.24.0
+// @version      1.25.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -93,6 +93,13 @@
             to: '',
             interval: 5,
         },
+        // Bilan Discord périodique des expéditions (en cours + résultats de la période) ; interval en secondes
+        expeditionReport: {
+            enabled: true,
+            interval: 3600,
+        },
+        // Un message Discord à chaque lancement d'expédition (les erreurs sont toujours signalées)
+        expeditionLaunchAlerts: false,
     };
 
     const LAUNCH_STATE_KEY = 'ogame_plugin_launch_state';
@@ -174,6 +181,7 @@
                     idle: { ...DEFAULT_CONFIG.idle, ...parsed.idle },
                     autoDefense: { ...DEFAULT_CONFIG.autoDefense, ...parsed.autoDefense },
                     discovery: { ...DEFAULT_CONFIG.discovery, ...parsed.discovery },
+                    expeditionReport: { ...DEFAULT_CONFIG.expeditionReport, ...parsed.expeditionReport },
                 };
                 if (parsed.expeditionsPerPlanet && !parsed.expeditionsPerBody) {
                     config.expeditionsPerBody = {};
@@ -2097,7 +2105,7 @@
                     const bodyLabel = state.currentBody.type === 'moon' ? '🌙' : '🌍';
                     console.log(`[Monitor] Expédition ${state.currentBody.launched}/${state.currentBody.missing} lancée pour ${state.currentBody.coords} (${state.currentBody.type})`);
 
-                    notifyDiscord(`🚀 **Expédition lancée** depuis ${bodyLabel} [${state.currentBody.coords}] (${state.currentBody.launched}/${state.currentBody.missing})`);
+                    if (CONFIG.expeditionLaunchAlerts) notifyDiscord(`🚀 **Expédition lancée** depuis ${bodyLabel} [${state.currentBody.coords}] (${state.currentBody.launched}/${state.currentBody.missing})`);
 
                     if (state.currentBody.launched < state.currentBody.missing) {
                         saveLaunchState({ ...state, step: 'go_to_fleet' });
@@ -2277,7 +2285,7 @@
 
         console.log(`[Monitor] Lancement automatique de ${totalMissing} expédition(s) sur ${bodyDesc}...`);
 
-        notifyDiscord(`🤖 **Lancement automatique** de ${totalMissing} expédition(s) sur ${bodyDesc}`);
+        if (CONFIG.expeditionLaunchAlerts) notifyDiscord(`🤖 **Lancement automatique** de ${totalMissing} expédition(s) sur ${bodyDesc}`);
 
         const firstBody = bodiesWithMissing[0];
 
@@ -2459,7 +2467,7 @@
                         sent++;
                         Object.entries(template.ships).forEach(([id, n]) => { fleet.ships[id] = (fleet.ships[id] || 0) - n; });
                         console.log(`[Monitor] Expédition envoyée (direct) depuis ${body.coords} : ${res.response.shipsSent} vaisseau(x)`);
-                        notifyDiscord(`🚀 **Expédition lancée** (envoi direct) depuis ${label} (${i + 1}/${body.missing}) · « ${template.name} »`);
+                        if (CONFIG.expeditionLaunchAlerts) notifyDiscord(`🚀 **Expédition lancée** (envoi direct) depuis ${label} (${i + 1}/${body.missing}) · « ${template.name} »`);
                     } else {
                         skipBody(getOgameErrorMessage(res));
                         break;
@@ -3473,6 +3481,32 @@
                     </label>
                 </div>
 
+                <div class="section-title">📊 Bilan des expéditions</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-report-enabled">
+                        Envoyer un bilan périodique sur Discord
+                    </label>
+                    <div class="hint">Expéditions en cours, puis résultats de la période : ressources, antimatière, vaisseaux trouvés, avance/retard, combats et pertes, découvertes</div>
+                </div>
+
+                <div class="config-group">
+                    <label>Intervalle (s)</label>
+                    <input type="number" id="cfg-report-interval" min="60" style="width: 100px;">
+                    <div class="hint">3600 = un bilan par heure</div>
+                    <button class="btn-test" id="cfg-report-send">📨 Envoyer le bilan maintenant</button>
+                    <div class="hint" id="cfg-report-status"></div>
+                </div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-expedition-launch-alerts">
+                        🚀 Message à chaque lancement d'expédition
+                    </label>
+                    <div class="hint">Désactivé : seules les erreurs de lancement sont signalées</div>
+                </div>
+
                 <div class="section-title">⏱️ Délai minimum entre deux alertes (s)</div>
 
                 <div class="cfg-grid">
@@ -3620,6 +3654,26 @@
             CONFIG.discordWebhook = previous;
             btn.textContent = ok ? '✅ Webhook OK' : '❌ Échec (voir console)';
             setTimeout(() => { btn.textContent = '📨 Tester le webhook'; }, 3000);
+        });
+        document.getElementById('cfg-report-send').addEventListener('click', async () => {
+            const btn = document.getElementById('cfg-report-send');
+            if (!CONFIG.discordWebhook) {
+                btn.textContent = '⚠️ Webhook non configuré';
+                setTimeout(() => { btn.textContent = '📨 Envoyer le bilan maintenant'; }, 3000);
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = '⏳ Lecture des messages...';
+            let text;
+            try {
+                const { ok } = await sendExpeditionReport(true);
+                text = ok ? '✅ Bilan envoyé' : '❌ Échec de l\'envoi Discord';
+            } catch (e) {
+                text = `❌ Erreur : ${e.message}`;
+            }
+            btn.disabled = false;
+            btn.textContent = text;
+            setTimeout(() => { btn.textContent = '📨 Envoyer le bilan maintenant'; }, 4000);
         });
         document.getElementById('cfg-refresh-expeditions').addEventListener('click', () => {
             renderExpeditionsConfig();
@@ -3988,6 +4042,10 @@
         document.getElementById('cfg-alert-attack').checked = CONFIG.alertAttack;
         document.getElementById('cfg-alert-espionage').checked = CONFIG.alertEspionage;
         document.getElementById('cfg-webhook').value = CONFIG.discordWebhook;
+        document.getElementById('cfg-report-enabled').checked = CONFIG.expeditionReport.enabled;
+        document.getElementById('cfg-report-interval').value = CONFIG.expeditionReport.interval;
+        document.getElementById('cfg-expedition-launch-alerts').checked = !!CONFIG.expeditionLaunchAlerts;
+        renderExpeditionReportStatus();
         document.getElementById('cfg-auto-launch').checked = CONFIG.autoLaunchExpeditions;
         document.getElementById('cfg-expedition-key').value = CONFIG.expeditionKey === 's' ? 's' : 'l';
         document.getElementById('cfg-expedition-mode').value = ['template', 'direct'].includes(CONFIG.expeditionMode) ? CONFIG.expeditionMode : 'key';
@@ -4152,6 +4210,11 @@
                 interval: Math.max(5, parseInt(document.getElementById('cfg-autodef-interval').value) || 30),
                 bodies: collectAutoDefenseBodies(),
             },
+            expeditionReport: {
+                enabled: document.getElementById('cfg-report-enabled').checked,
+                interval: Math.max(60, parseInt(document.getElementById('cfg-report-interval').value) || 3600),
+            },
+            expeditionLaunchAlerts: document.getElementById('cfg-expedition-launch-alerts').checked,
         };
 
         saveConfig(CONFIG);
@@ -6349,6 +6412,261 @@
         });
     }
 
+    // ===== Bilan périodique des expéditions =====
+    // Résultats lus dans les messages (onglet Flottes → Expéditions, et Combats pour les pertes) :
+    // chaque message porte ses données brutes dans .rawMessageData (data-raw-*)
+
+    const EXPEDITION_REPORT_KEY = 'ogame_plugin_expedition_report';
+    const MESSAGES_SUBTAB = { expeditions: 22, combats: 21 };
+    const MESSAGE_TYPE = { expedition: '41', discovery: '61', combat: '25' };
+    const EXPEDITION_RESULT_LABELS = {
+        ressources: '💰 Ressources', shipwrecks: '🛸 Vaisseaux', darkmatter: '🌑 Antimatière', items: '🎁 Objet',
+        trader: '🤝 Marchand', navigation: '⏱️ Retard/avance', nothing: '∅ Rien',
+        combatPirates: '🏴‍☠️ Pirates', combatAliens: '👽 Aliens',
+    };
+
+    function loadExpeditionReportState() {
+        return loadJson(EXPEDITION_REPORT_KEY, {});
+    }
+
+    function saveExpeditionReportState(state) {
+        localStorage.setItem(EXPEDITION_REPORT_KEY, JSON.stringify(state));
+    }
+
+    function parseJsonSafe(text, fallback = null) {
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            return fallback;
+        }
+    }
+
+    // 12345678 -> « 12,3M »
+    function formatCompact(value) {
+        const v = Math.round(value || 0);
+        const units = [[1e9, 'G'], [1e6, 'M'], [1e3, 'k']];
+        for (const [size, unit] of units) {
+            if (Math.abs(v) >= size) return `${parseFloat((v / size).toFixed(v >= size * 100 ? 0 : 1)).toString().replace('.', ',')}${unit}`;
+        }
+        return v.toLocaleString('fr-FR');
+    }
+
+    // Messages d'un onglet postérieurs à `since` (ms locales), du plus récent au plus ancien
+    async function fetchMessagesSince(subTab, since, maxPages = 15) {
+        const found = [];
+        for (let page = 1; page <= maxPages; page++) {
+            const res = await ogamePost(`${window.location.origin}/game/index.php?page=componentOnly&component=messages&asJson=1&action=getMessagesList`,
+                { activeSubTab: subTab, showTrash: false, messagePage: page });
+            const messages = Array.isArray(res && res.messages) ? res.messages : [];
+            let reachedOlder = messages.length === 0;
+            messages.forEach(html => {
+                const raw = new DOMParser().parseFromString(html, 'text/html').querySelector('.rawMessageData');
+                if (!raw) return;
+                const data = {};
+                [...raw.attributes].forEach(a => {
+                    if (a.name.startsWith('data-raw-')) data[a.name.slice(9)] = a.value;
+                });
+                data.at = serverSecondsToLocalMs(parseInt(data.timestamp) || 0);
+                if (data.at < since) {
+                    reachedOlder = true;
+                    return;
+                }
+                found.push(data);
+            });
+            if (reachedOlder || page >= (parseInt(res.pageCount) || 1)) break;
+        }
+        return found;
+    }
+
+    // Expéditions en vol : page Mouvements de flotte
+    async function fetchExpeditionsInFlight() {
+        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=movement`, { credentials: 'include' });
+        const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const fleets = [...doc.querySelectorAll(`.fleetDetails[data-mission-type="15"]`)];
+        const byOrigin = {};
+        let returning = 0;
+        let nextReturn = null;
+        fleets.forEach(f => {
+            const origin = (f.querySelector('.originCoords')?.textContent || '?').trim();
+            byOrigin[origin] = (byOrigin[origin] || 0) + 1;
+            if (f.dataset.returnFlight && f.dataset.returnFlight !== 'false' && f.dataset.returnFlight !== '0') {
+                returning++;
+                const at = serverSecondsToLocalMs(parseInt(f.dataset.arrivalTime) || 0);
+                if (at > Date.now() && (!nextReturn || at < nextReturn)) nextReturn = at;
+            }
+        });
+        const slotText = sel => (doc.querySelector(sel)?.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+        const fleetSlots = slotText('.fleetSlots');
+        const expSlots = slotText('.expSlots');
+        return {
+            total: fleets.length,
+            returning,
+            byOrigin,
+            nextReturn,
+            fleetSlots: fleetSlots ? `${fleetSlots[1]}/${fleetSlots[2]}` : null,
+            expSlots: expSlots ? `${expSlots[1]}/${expSlots[2]}` : null,
+        };
+    }
+
+    // Pertes d'un rapport de combat d'expédition : vaisseaux détruits de vos flottes (dernier round, cumulé)
+    function getCombatLosses(report, playerId) {
+        const fleets = parseJsonSafe(report.fleets, []) || [];
+        const mine = fleets.filter(f => String(f.player?.id) === String(playerId));
+        const side = mine[0]?.side || 'defender';
+        const myFleetIds = new Set(mine.map(f => f.fleetId));
+        const rounds = parseJsonSafe(report.combatrounds, []) || [];
+        const last = rounds[rounds.length - 1];
+        const lost = {};
+        (last?.fleets || [])
+            .filter(f => myFleetIds.size ? myFleetIds.has(f.fleetId) : f.side === side)
+            .forEach(f => (f.technologies || []).forEach(t => {
+                if (t.destroyedTotal > 0) lost[t.technologyId] = (lost[t.technologyId] || 0) + t.destroyedTotal;
+            }));
+        const result = parseJsonSafe(report.result, {}) || {};
+        const value = ((result.totalValueOfUnitsLost || []).find(v => v.side === side) || {}).value || 0;
+        return { lost, value };
+    }
+
+    function summarizeExpeditionMessages(messages, combats, playerId) {
+        const s = {
+            count: 0, results: {}, resources: { metal: 0, crystal: 0, deuterium: 0, darkMatter: 0 }, ships: {},
+            early: 0, late: 0, fleetsLost: 0, combats: 0, lost: {}, lostValue: 0,
+            discoveries: { count: 0, artifacts: 0, xp: 0, shipsLost: 0, nothing: 0 },
+        };
+        messages.forEach(m => {
+            if (m.messagetype === MESSAGE_TYPE.discovery) {
+                s.discoveries.count++;
+                if (m.discoverytype === 'artifacts') s.discoveries.artifacts += parseInt(m.artifactsfound) || 0;
+                else if (m.discoverytype === 'lifeform-xp') s.discoveries.xp += parseInt(m.lifeformgainedexperience) || 0;
+                else if (m.discoverytype === 'ship-lost') s.discoveries.shipsLost++;
+                else s.discoveries.nothing++;
+                return;
+            }
+            if (m.messagetype !== MESSAGE_TYPE.expedition) return;
+            s.count++;
+            const result = m.expeditionresult || 'inconnu';
+            s.results[result] = (s.results[result] || 0) + 1;
+            const gained = parseJsonSafe(m.resourcesgained, {}) || {};
+            Object.keys(gained).forEach(r => { s.resources[r] = (s.resources[r] || 0) + (Number(gained[r]) || 0); });
+            const ships = parseJsonSafe(m.technologiesgained, {}) || {};
+            Object.keys(ships).forEach(id => { s.ships[id] = (s.ships[id] || 0) + (Number(ships[id].amount) || 0); });
+            if (m.navigation) {
+                const nav = parseJsonSafe(m.navigation, {}) || {};
+                if ((nav.returnTimeAbsoluteIncreaseHours || 0) > 0 || (nav.returnTimeMultiplier || 1) > 1) s.late++;
+                else if ((nav.returnTimeMultiplier || 1) < 1) s.early++;
+            }
+            if (/lost|black|hole/i.test(result)) s.fleetsLost++;
+        });
+        combats
+            .filter(c => c.messagetype === MESSAGE_TYPE.combat && /:16$/.test(c.coords || ''))
+            .forEach(c => {
+                s.combats++;
+                const { lost, value } = getCombatLosses(c, playerId);
+                Object.keys(lost).forEach(id => { s.lost[id] = (s.lost[id] || 0) + lost[id]; });
+                s.lostValue += value;
+            });
+        return s;
+    }
+
+    function formatShipList(ships) {
+        const entries = Object.entries(ships).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+        return entries.map(([id, n]) => `${n.toLocaleString('fr-FR')} ${SHIP_NAMES[id] || id}`).join(', ');
+    }
+
+    function buildExpeditionReport(flight, s, from, to) {
+        const lines = [`📊 **Bilan expéditions** · ${formatClock(from)} → ${formatClock(to)}`];
+        if (flight) {
+            const origins = Object.entries(flight.byOrigin).map(([c, n]) => `${c} ×${n}`).join(', ');
+            lines.push(`🚀 **En cours : ${flight.total}**${flight.expSlots ? ` (slots expé ${flight.expSlots}` : ''}${flight.fleetSlots ? `${flight.expSlots ? ', ' : ' ('}flottes ${flight.fleetSlots})` : (flight.expSlots ? ')' : '')}`
+                + `${flight.total ? ` · ${flight.total - flight.returning} à l'aller, ${flight.returning} au retour` : ''}`
+                + `${flight.nextReturn ? ` · prochain retour ${formatClock(flight.nextReturn)}` : ''}`);
+            if (origins) lines.push(`　${origins}`);
+        }
+        if (s.count === 0) {
+            lines.push('📥 Aucun résultat d\'expédition sur la période');
+        } else {
+            lines.push(`📥 **${s.count} résultat(s)** : ${Object.entries(s.results).sort((a, b) => b[1] - a[1])
+                .map(([r, n]) => `${EXPEDITION_RESULT_LABELS[r] || r} ${n}`).join(' · ')}`);
+            const r = s.resources;
+            const total = (r.metal || 0) + (r.crystal || 0) + (r.deuterium || 0);
+            const res = [['métal', r.metal], ['cristal', r.crystal], ['deut', r.deuterium]].filter(([, v]) => v > 0)
+                .map(([n, v]) => `${formatCompact(v)} ${n}`);
+            if (res.length) lines.push(`💰 Ressources : ${res.join(' · ')} (total ${formatCompact(total)})`);
+            if (r.darkMatter > 0) lines.push(`🌑 Antimatière : ${r.darkMatter.toLocaleString('fr-FR')}`);
+            const ships = formatShipList(s.ships);
+            if (ships) lines.push(`🛸 Vaisseaux trouvés : ${ships}`);
+            if (s.early || s.late) lines.push(`⏱️ Retour : ${s.early} en avance · ${s.late} en retard`);
+        }
+        if (s.combats > 0 || s.fleetsLost > 0) {
+            const lost = formatShipList(s.lost);
+            lines.push(`⚔️ Combats : ${s.combats}${lost ? ` · pertes : ${lost} (${formatCompact(s.lostValue)} de valeur)` : ' · aucune perte'}`);
+            if (s.fleetsLost > 0) lines.push(`🕳️ **Flotte(s) perdue(s) : ${s.fleetsLost}**`);
+        } else if (s.count > 0) {
+            lines.push('⚔️ Aucun combat, aucune perte');
+        }
+        const d = s.discoveries;
+        if (d.count > 0) {
+            const parts = [d.xp ? `+${d.xp.toLocaleString('fr-FR')} XP` : '', d.artifacts ? `${d.artifacts.toLocaleString('fr-FR')} artefacts` : '',
+                d.nothing ? `${d.nothing} sans résultat` : '', d.shipsLost ? `${d.shipsLost} vaisseau(x) perdu(s)` : ''].filter(Boolean);
+            lines.push(`🔭 Découvertes : ${d.count}${parts.length ? ` (${parts.join(' · ')})` : ''}`);
+        }
+        // Limite Discord : 2000 caractères
+        return lines.join('\n').slice(0, 1990);
+    }
+
+    // manual : envoi immédiat sur la dernière période, sans décaler le prochain bilan
+    async function sendExpeditionReport(manual = false) {
+        const state = loadExpeditionReportState();
+        const now = Date.now();
+        const interval = Math.max(60, CONFIG.expeditionReport.interval || 3600) * 1000;
+        const from = manual ? now - interval : (state.lastAt || now - interval);
+        if (!manual) {
+            // Noté avant les requêtes : un autre onglet n'envoie pas le même bilan
+            state.lastAt = now;
+            saveExpeditionReportState(state);
+        }
+        const playerId = document.querySelector('meta[name="ogame-player-id"]')?.getAttribute('content');
+        const [flight, messages, combats] = await Promise.all([
+            fetchExpeditionsInFlight().catch(() => null),
+            fetchMessagesSince(MESSAGES_SUBTAB.expeditions, from),
+            fetchMessagesSince(MESSAGES_SUBTAB.combats, from),
+        ]);
+        const report = buildExpeditionReport(flight, summarizeExpeditionMessages(messages, combats, playerId), from, now);
+        const ok = await notifyDiscord(report);
+        if (!manual) {
+            state.lastResult = ok ? 'envoyé' : 'échec de l\'envoi Discord';
+            saveExpeditionReportState(state);
+        }
+        return { ok, report };
+    }
+
+    function renderExpeditionReportStatus() {
+        const el = document.getElementById('cfg-report-status');
+        if (!el) return;
+        const state = loadExpeditionReportState();
+        const interval = Math.max(60, CONFIG.expeditionReport.interval || 3600) * 1000;
+        el.textContent = !CONFIG.expeditionReport.enabled ? 'Bilan désactivé'
+            : !state.lastAt ? 'Premier bilan dans un intervalle'
+                : `Dernier bilan ${formatClock(state.lastAt)}${state.lastResult ? ` (${state.lastResult})` : ''} · prochain vers ${formatClock(state.lastAt + interval)}`;
+    }
+
+    async function checkExpeditionReport() {
+        if (!CONFIG.expeditionReport.enabled || !CONFIG.discordWebhook) return;
+        const state = loadExpeditionReportState();
+        const interval = Math.max(60, CONFIG.expeditionReport.interval || 3600) * 1000;
+        if (!state.lastAt) {
+            // Première fois : la période démarre maintenant
+            saveExpeditionReportState({ ...state, lastAt: Date.now() });
+            return;
+        }
+        if (Date.now() - state.lastAt < interval) return;
+        try {
+            await sendExpeditionReport(false);
+        } catch (e) {
+            console.log('[Monitor] Bilan des expéditions impossible:', e);
+        }
+    }
+
     function reconnect() {
         // Avec des @grant, le script tourne en sandbox : `document` reste celui de la page
         const btn = document.querySelector('button.button-default.button-md');
@@ -6398,7 +6716,7 @@
             if (countDecreased || finishedTotal > 0) {
                 localStorage.removeItem('monitor_expedition');
             }
-            sendDiscord(`🚀 **${activeTotal}/${expectedTotal} Expédition(s)** (${finishedTotal} terminée(s))`, 'expedition', 'expedition');
+            if (CONFIG.expeditionLaunchAlerts) sendDiscord(`🚀 **${activeTotal}/${expectedTotal} Expédition(s)** (${finishedTotal} terminée(s))`, 'expedition', 'expedition');
 
             autoLaunchExpeditions();
         }
@@ -6745,6 +7063,8 @@
         console.log(`[Monitor] Vérification des expéditions toutes les ${CONFIG.expeditionCheckInterval / 1000}s`);
 
         setInterval(async () => {
+            // Bilan : lecture seule (messages, mouvements), sans navigation ni changement de planète
+            checkExpeditionReport();
             if (isActionInProgress()) {
                 console.log('[Monitor] Action en cours, vérification ignorée');
                 return;

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.25.0
+
+- 📊 Bilan Discord périodique des expéditions (⚙️ → Alertes, toutes les 3600 s par défaut) :
+  - en cours : nombre d'expéditions, aller/retour, prochain retour, slots expéditions et flottes, répartition par planète ;
+  - résultats de la période : nombre par type (ressources, vaisseaux, antimatière, objet, marchand, retard/avance, pirates, aliens, rien), total métal/cristal/deutérium, antimatière, vaisseaux trouvés, retours en avance/en retard ;
+  - combats d'expédition et pertes (vaisseaux détruits et valeur), flottes perdues ;
+  - découvertes de formes de vie de la période (XP, artefacts, vaisseaux perdus).
+  Données lues dans les messages OGame (onglets Expéditions et Combats), sans navigation.
+- Bouton « 📨 Envoyer le bilan maintenant » : bilan de la dernière période, sans décaler le prochain envoi automatique.
+- Plus de message Discord à chaque lancement d'expédition (ni « Lancement automatique », ni « x/y expéditions ») : réactivable dans ⚙️ → Alertes. Les erreurs de lancement restent signalées.
+
 ## 1.24.0
 
 - 🚀 Expéditions : nouveau mode « Flotte enregistrée — envoi direct (sans changer de page) » (⚙️ → Expéditions → Composition de la flotte). Comme le bouton « Envoyer » de la case 16 dans la Galaxie : une requête par expédition (`fleetdispatch&action=miniFleet`), depuis chaque planète/lune, sans navigation. Le plugin revient ensuite sur la planète affichée et rafraîchit la liste des événements.
