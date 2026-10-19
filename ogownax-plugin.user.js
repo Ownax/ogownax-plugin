@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.21.0
+// @version      1.22.0
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -80,6 +80,15 @@
             enabled: false,
             interval: 30,
             bodies: {},
+        },
+        // Découverte de formes de vie : plage « galaxie:système », limites cumulables (0 = ignorée)
+        discovery: {
+            enabled: false,
+            keepFreeSlots: 0,
+            maxActive: 0,
+            from: '',
+            to: '',
+            interval: 5,
         },
     };
 
@@ -161,6 +170,7 @@
                     buildQueue: { ...DEFAULT_CONFIG.buildQueue, ...parsed.buildQueue },
                     idle: { ...DEFAULT_CONFIG.idle, ...parsed.idle },
                     autoDefense: { ...DEFAULT_CONFIG.autoDefense, ...parsed.autoDefense },
+                    discovery: { ...DEFAULT_CONFIG.discovery, ...parsed.discovery },
                 };
                 if (parsed.expeditionsPerPlanet && !parsed.expeditionsPerBody) {
                     config.expeditionsPerBody = {};
@@ -3124,6 +3134,44 @@
                     </div>
                     <div class="hint">Laisser vide pour aucune limite (ex. : 8 à 22 pour 8h-22h)</div>
                 </div>
+
+                <div class="section-title">🔭 Découverte de formes de vie</div>
+
+                <div class="config-group">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="cfg-discovery-enabled">
+                        Lancer les découvertes automatiquement
+                    </label>
+                    <div class="hint">Envoie un vaisseau d'exploration sur chaque position découvrable de la plage, depuis la planète affichée (sans changer de page). Attend votre inactivité.</div>
+                </div>
+
+                <div class="cfg-grid">
+                    <div class="config-group">
+                        <label>Du système</label>
+                        <input type="text" id="cfg-discovery-from" placeholder="4:100">
+                    </div>
+                    <div class="config-group">
+                        <label>Au système</label>
+                        <input type="text" id="cfg-discovery-to" placeholder="4:300">
+                    </div>
+                    <div class="config-group">
+                        <label>Slots de flotte à garder libres</label>
+                        <input type="number" id="cfg-discovery-keep-free" min="0" max="99">
+                    </div>
+                    <div class="config-group">
+                        <label>Découvertes en vol max</label>
+                        <input type="number" id="cfg-discovery-max-active" min="0" max="99">
+                    </div>
+                </div>
+                <div class="hint">0 = pas de limite. Les deux limites s'appliquent ensemble : la plus stricte l'emporte (ex. garder 3 slots libres pour les expéditions ET 5 découvertes max).</div>
+
+                <div class="config-group">
+                    <label>Passage toutes les (min)</label>
+                    <input type="number" id="cfg-discovery-interval" min="1" max="1440" style="width: 80px;">
+                </div>
+
+                <div class="hint" id="cfg-discovery-status"></div>
+                <button class="btn-test" id="cfg-discovery-run">🔭 Lancer maintenant</button>
             </div>
 
             <div class="cfg-tab" data-tab="build">
@@ -3353,6 +3401,26 @@
         document.getElementById('cfg-buildqueue-log-refresh').addEventListener('click', renderBuildLog);
         document.getElementById('cfg-expedition-mode').addEventListener('change', updateExpeditionModeVisibility);
         document.getElementById('cfg-stats-refresh').addEventListener('click', refreshFleetStats);
+        document.getElementById('cfg-discovery-run').addEventListener('click', async () => {
+            const btn = document.getElementById('cfg-discovery-run');
+            if (!CONFIG.discovery.enabled) {
+                btn.textContent = '⚠️ Activez et sauvegardez d\'abord';
+                setTimeout(() => { btn.textContent = '🔭 Lancer maintenant'; }, 3000);
+                return;
+            }
+            btn.disabled = true;
+            btn.textContent = '⏳ Découvertes…';
+            // Clic de votre part : pas d'attente d'inactivité
+            const previousIdle = CONFIG.idle.enabled;
+            CONFIG.idle.enabled = false;
+            try {
+                await runDiscovery(true);
+            } finally {
+                CONFIG.idle.enabled = previousIdle;
+                btn.disabled = false;
+                btn.textContent = '🔭 Lancer maintenant';
+            }
+        });
     }
 
     function updateWebhookIndicator() {
@@ -3712,6 +3780,13 @@
         document.getElementById('cfg-buildqueue-recheck').value = CONFIG.buildQueue.recheckInterval;
         document.getElementById('cfg-idle-enabled').checked = CONFIG.idle.enabled;
         document.getElementById('cfg-idle-delay').value = CONFIG.idle.delay;
+        document.getElementById('cfg-discovery-enabled').checked = CONFIG.discovery.enabled;
+        document.getElementById('cfg-discovery-from').value = CONFIG.discovery.from || '';
+        document.getElementById('cfg-discovery-to').value = CONFIG.discovery.to || '';
+        document.getElementById('cfg-discovery-keep-free').value = CONFIG.discovery.keepFreeSlots || 0;
+        document.getElementById('cfg-discovery-max-active').value = CONFIG.discovery.maxActive || 0;
+        document.getElementById('cfg-discovery-interval').value = CONFIG.discovery.interval || 5;
+        renderDiscoveryStatus();
         document.getElementById('cfg-autodef-enabled').checked = CONFIG.autoDefense.enabled;
         document.getElementById('cfg-autodef-interval').value = CONFIG.autoDefense.interval;
         renderAutoDefenseConfig();
@@ -3823,6 +3898,14 @@
             idle: {
                 enabled: document.getElementById('cfg-idle-enabled').checked,
                 delay: Math.max(5, parseInt(document.getElementById('cfg-idle-delay').value) || 60),
+            },
+            discovery: {
+                enabled: document.getElementById('cfg-discovery-enabled').checked,
+                from: document.getElementById('cfg-discovery-from').value.trim(),
+                to: document.getElementById('cfg-discovery-to').value.trim(),
+                keepFreeSlots: Math.max(0, parseInt(document.getElementById('cfg-discovery-keep-free').value) || 0),
+                maxActive: Math.max(0, parseInt(document.getElementById('cfg-discovery-max-active').value) || 0),
+                interval: Math.max(1, parseInt(document.getElementById('cfg-discovery-interval').value) || 5),
             },
             autoDefense: {
                 enabled: document.getElementById('cfg-autodef-enabled').checked,
@@ -5637,6 +5720,228 @@
         el.textContent = `${active.length} planète(s) suivie(s) · prochain passage : ${next.b.name} [${next.b.coords}] ${next.at <= now ? 'maintenant' : `vers ${formatClock(next.at)}`}`;
     }
 
+    // ===== Découverte de formes de vie =====
+    // Envoie des vaisseaux d'exploration (mission 18) sur les positions découvrables d'une plage de systèmes,
+    // par les mêmes requêtes que la page Galaxie (aucune navigation). Limites : slots de flotte à garder libres
+    // et/ou nombre maximum de découvertes en vol (les deux s'appliquent ensemble, la plus stricte l'emporte).
+
+    const DISCOVERY_STATE_KEY = 'ogame_plugin_discovery_state';
+    const DISCOVERY_MISSION = 18;
+    const SYSTEMS_PER_GALAXY = 499;
+    // Systèmes lus au plus par passage (une requête chacun)
+    const DISCOVERY_MAX_SYSTEMS_PER_RUN = 40;
+    let discoveryRunning = false;
+
+    // « 4:100 » -> { galaxy: 4, system: 100 } ; null si illisible
+    function parseSystemCoords(text) {
+        const match = String(text || '').trim().match(/^(\d+)\s*:\s*(\d+)$/);
+        if (!match) return null;
+        const galaxy = parseInt(match[1]);
+        const system = parseInt(match[2]);
+        if (galaxy < 1 || system < 1 || system > SYSTEMS_PER_GALAXY) return null;
+        return { galaxy, system };
+    }
+
+    function getDiscoveryRange() {
+        const from = parseSystemCoords(CONFIG.discovery.from);
+        const to = parseSystemCoords(CONFIG.discovery.to) || from;
+        if (!from) return null;
+        const index = c => (c.galaxy - 1) * SYSTEMS_PER_GALAXY + (c.system - 1);
+        const [a, b] = index(from) <= index(to) ? [from, to] : [to, from];
+        return { from: a, to: b, start: index(a), end: index(b) };
+    }
+
+    function systemFromIndex(i) {
+        return { galaxy: Math.floor(i / SYSTEMS_PER_GALAXY) + 1, system: (i % SYSTEMS_PER_GALAXY) + 1 };
+    }
+
+    function loadDiscoveryState() {
+        return loadJson(DISCOVERY_STATE_KEY, {});
+    }
+
+    function saveDiscoveryState(state) {
+        localStorage.setItem(DISCOVERY_STATE_KEY, JSON.stringify(state));
+    }
+
+    async function ogamePost(url, params) {
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+                'X-Requested-With': 'XMLHttpRequest',
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            },
+            body: new URLSearchParams(params).toString(),
+        });
+        return response.json();
+    }
+
+    async function fetchSolarSystem(galaxy, system) {
+        return ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=galaxy&action=fetchSolarSystemData&asJson=1`, { galaxy, system });
+    }
+
+    // Découvertes en vol : page Mouvements de flotte (une ligne par flotte, aller comme retour)
+    async function countActiveDiscoveries() {
+        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=movement`, { credentials: 'include' });
+        const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const fleets = [...doc.querySelectorAll('.fleetDetails[data-mission-type]')];
+        const slotsMatch = (doc.querySelector('.fleetSlots, #slots')?.textContent || '').match(/(\d+)\s*\/\s*(\d+)/);
+        return {
+            discoveries: fleets.filter(f => parseInt(f.dataset.missionType) === DISCOVERY_MISSION).length,
+            usedSlots: slotsMatch ? parseInt(slotsMatch[1]) : null,
+            maxSlots: slotsMatch ? parseInt(slotsMatch[2]) : null,
+        };
+    }
+
+    // Nombre de découvertes encore autorisées
+    function getDiscoveryAllowance(active, usedSlots, maxSlots) {
+        let allowed = Infinity;
+        if (usedSlots !== null && maxSlots !== null) {
+            allowed = Math.min(allowed, maxSlots - usedSlots - Math.max(0, CONFIG.discovery.keepFreeSlots || 0));
+        }
+        if (CONFIG.discovery.maxActive > 0) {
+            allowed = Math.min(allowed, CONFIG.discovery.maxActive - active);
+        }
+        return Number.isFinite(allowed) ? Math.max(0, allowed) : 0;
+    }
+
+    function setPageAjaxToken(newToken) {
+        if (!newToken) return;
+        try {
+            const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+            // La page Galaxie garde ce jeton pour ses propres actions : on le tient à jour
+            if (typeof page.token === 'string') page.token = newToken;
+        } catch (e) {}
+    }
+
+    async function runDiscovery(force = false) {
+        if (!CONFIG.discovery.enabled || discoveryRunning) return;
+        if (isActionInProgress()) return;
+        if (!isUserIdle()) {
+            runWhenIdle('discovery', () => runDiscovery(force));
+            return;
+        }
+        const state = loadDiscoveryState();
+        const interval = Math.max(1, CONFIG.discovery.interval || 5) * 60 * 1000;
+        if (!force && state.lastRunAt && Date.now() - state.lastRunAt < interval) return;
+
+        const range = getDiscoveryRange();
+        if (!range) {
+            buildLog('🔭 Découverte : plage de systèmes non configurée');
+            return;
+        }
+
+        discoveryRunning = true;
+        const sent = [];
+        let result = '';
+        try {
+            const fleets = await countActiveDiscoveries();
+            let active = fleets.discoveries;
+            let usedSlots = fleets.usedSlots;
+            let maxSlots = fleets.maxSlots;
+            let allowed = getDiscoveryAllowance(active, usedSlots, maxSlots);
+            if (allowed <= 0) {
+                result = `Rien à lancer (${active} en vol, slots ${usedSlots ?? '?'}/${maxSlots ?? '?'})`;
+                return;
+            }
+
+            const size = range.end - range.start + 1;
+            let cursor = Number.isInteger(state.cursor) && state.cursor >= range.start && state.cursor <= range.end ? state.cursor : range.start;
+            let token = null;
+            let scanned = 0;
+            let stop = false;
+            while (!stop && allowed > 0 && scanned < Math.min(size, DISCOVERY_MAX_SYSTEMS_PER_RUN)) {
+                const { galaxy, system } = systemFromIndex(cursor);
+                const data = await fetchSolarSystem(galaxy, system);
+                scanned++;
+                token = data.newAjaxToken || data.token || token;
+                const sys = data.system || {};
+                if (Number.isInteger(sys.usedFleetSlots)) usedSlots = sys.usedFleetSlots;
+                if (Number.isInteger(sys.maximumFleetSlots)) maxSlots = sys.maximumFleetSlots;
+                allowed = getDiscoveryAllowance(active, usedSlots, maxSlots);
+
+                const positions = (sys.galaxyContent || [])
+                    .filter(p => (p.availableMissions || []).some(m => m.missionType === DISCOVERY_MISSION && m.canSend))
+                    .map(p => p.position);
+                for (const position of positions) {
+                    if (allowed <= 0) break;
+                    await wait(400 + Math.random() * 600);
+                    const res = await ogamePost(`${window.location.origin}/game/index.php?page=ingame&component=fleetdispatch&action=sendDiscoveryFleet&asJson=1`,
+                        { galaxy, system, position, token });
+                    token = res.newAjaxToken || token;
+                    const response = res.response || {};
+                    if (res.success && response.success) {
+                        sent.push(`${galaxy}:${system}:${position}`);
+                        active++;
+                        usedSlots = usedSlots === null ? null : usedSlots + 1;
+                        allowed--;
+                        buildLog(`🔭 Découverte envoyée en ${galaxy}:${system}:${position}`);
+                    } else {
+                        const message = String(response.message || res.message || response.error || 'refusée').replace(/<[^>]+>/g, ' ').trim();
+                        buildLog(`🔭 Découverte ${galaxy}:${system}:${position} refusée : ${message}`);
+                        result = `Arrêt : ${message}`;
+                        stop = true;
+                        break;
+                    }
+                    if (response.discovery && response.discovery.canSendDiscovery === false) {
+                        result = 'OGame n\'autorise plus de découverte pour le moment';
+                        stop = true;
+                        break;
+                    }
+                }
+                // Système épuisé (ou lu en entier) : on passe au suivant ; sinon on y revient au prochain passage
+                if (!stop && allowed > 0) {
+                    cursor = cursor >= range.end ? range.start : cursor + 1;
+                }
+                if (!stop && allowed > 0) await wait(300 + Math.random() * 400);
+            }
+            setPageAjaxToken(token);
+            state.cursor = cursor;
+            if (!result) {
+                result = sent.length > 0
+                    ? `${sent.length} lancée(s)`
+                    : (allowed > 0 ? `Aucune position découvrable sur ${scanned} système(s)` : 'Limite atteinte');
+            }
+        } catch (e) {
+            result = `Erreur : ${e.message}`;
+            buildLog('🔭 Découverte : échec', e);
+        } finally {
+            discoveryRunning = false;
+            state.lastRunAt = Date.now();
+            state.lastResult = result;
+            state.lastSent = sent;
+            saveDiscoveryState(state);
+            buildLog(`🔭 Découverte : ${result}`);
+            if (sent.length > 0) {
+                notifyDiscord(`🔭 **${sent.length} découverte(s) lancée(s)** : ${sent.join(', ')}`);
+                // Nouvelles flottes : liste des événements et ressources à jour sur la page
+                try {
+                    const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+                    if (typeof page.getAjaxEventbox === 'function') page.getAjaxEventbox();
+                    if (typeof page.getAjaxResourcebox === 'function') page.getAjaxResourcebox();
+                } catch (e) {}
+            }
+            renderDiscoveryStatus();
+        }
+    }
+
+    function renderDiscoveryStatus() {
+        const el = document.getElementById('cfg-discovery-status');
+        if (!el) return;
+        const state = loadDiscoveryState();
+        const range = getDiscoveryRange();
+        const parts = [];
+        if (range) {
+            parts.push(`Plage ${range.from.galaxy}:${range.from.system} → ${range.to.galaxy}:${range.to.system}`);
+            if (Number.isInteger(state.cursor)) {
+                const c = systemFromIndex(state.cursor);
+                parts.push(`reprise en ${c.galaxy}:${c.system}`);
+            }
+        }
+        if (state.lastRunAt) parts.push(`dernier passage ${formatClock(state.lastRunAt)} : ${state.lastResult || ''}`);
+        el.textContent = parts.join(' · ') || 'Jamais lancée';
+    }
+
     function isLoggedIn() {
         return !!document.querySelector('#countColonies');
     }
@@ -6086,6 +6391,7 @@
             checkExpeditions();
             await checkBuildQueues();
             await checkAutoDefense();
+            await runDiscovery();
         }, CONFIG.expeditionCheckInterval);
     }
 
@@ -6216,6 +6522,7 @@
             refreshBuildEstimateHere();
             await checkBuildQueues(true);
             await checkAutoDefense();
+            await runDiscovery();
             scheduleNextBuildCheck();
             startExpeditionChecker();
             scheduleNextClick();

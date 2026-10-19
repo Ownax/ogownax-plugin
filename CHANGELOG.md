@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.22.0
+
+- **🔭 Découverte de formes de vie automatique** (onglet 🚀 Expéditions, désactivée par défaut) : envoie un vaisseau d'exploration sur chaque position découvrable d'une plage de systèmes (ex. 4:100 → 4:300), par les mêmes requêtes que la page Galaxie, sans changer de page.
+- Deux limites cumulables (0 = ignorée, la plus stricte l'emporte) : **slots de flotte à garder libres** et **nombre maximum de découvertes en vol** (comptées sur la page Mouvements de flotte).
+- Parcours mémorisé : chaque passage reprend au système où le précédent s'est arrêté, puis repart au début de la plage. 40 systèmes lus au plus par passage, passage toutes les 5 min par défaut, uniquement quand vous êtes inactif. Bouton « Lancer maintenant ».
+- Arrêt au premier refus d'OGame (ressources, limite…), motif dans le journal ; résumé des découvertes envoyées sur Discord.
+
 ## 1.21.0
 
 - Nouvel onglet **🏰 Auto-défense** (désactivé par défaut) : par planète/lune, un **seuil** par ressource (métal, cristal, deutérium ; 0 = ignoré), un **stock minimum à garder** et une **liste ordonnée de défenses** (▲▼ pour l'ordre, ✕ pour retirer).
