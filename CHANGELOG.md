@@ -3,7 +3,7 @@
 ## 1.23.2
 
 - 🔭 Découverte : une position en attente renvoie un **texte** (« … à nouveau possible dans 18h 7m ») au lieu de « non » ; le plugin le prenait pour « envoyable » et se faisait refuser. Seules les positions réellement disponibles sont visées.
-- Motif du refus lu au bon endroit () au lieu de « refusée ». Une position en attente refusée ne stoppe plus le passage : on passe à la suivante.
+- Motif du refus lu au bon endroit (`errors[0].message`) au lieu de « refusée ». Une position en attente refusée ne stoppe plus le passage : on passe à la suivante.
 - Systèmes entièrement en attente mémorisés jusqu'à la fin de leur plus courte attente : ils ne sont plus relus à chaque passage.
 
 ## 1.23.1
