@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.25.3
+
+- 🐛 Expéditions : la liste des événements rechargée après un envoi direct était vide (elle était lue sur la Vue d'ensemble, où OGame ne la met pas). Le plugin croyait alors toutes les expéditions manquantes et renvoyait (« Trop d'expéditions simultanées », « manque … Grand transporteur »). Elle est maintenant lue là où OGame la charge (catchEvents), et l'heure d'arrivée sert à repérer les flottes arrivées (les comptes à rebours ne tournent pas dans une liste rechargée).
+- 🏗️ Files de construction : une flotte chargée qui arrive sur une planète dont la file attend des ressources (transport, stationnement, retour d'expédition…) avance la vérification à son arrivée, si le chargement plus la production suffisent. Plus besoin d'aller sur la planète.
+- La liste des événements est relue toutes les 5 min quand la page reste ouverte (flottes lancées ailleurs), sans changer de planète.
+
 ## 1.25.2
 
 - 🐛 Expéditions (envoi direct) : les slots d'expédition (ex. 12/12) sont lus sur la page Flotte avant d'envoyer. Slots pleins → aucun envoi, aucune alerte, nouvel essai 5 min plus tard (fini les « Trop d'expéditions simultanées » toutes les 10 min).

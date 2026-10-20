@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.25.2
+// @version      1.25.3
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -1449,6 +1449,15 @@
         return null;
     }
 
+    // Flotte arrivée : compte à rebours « terminé », ou heure d'arrivée passée
+    // (liste rechargée par le plugin : ses comptes à rebours ne tournent pas)
+    function isEventRowFinished(row) {
+        const countdownEl = row.querySelector('.countDown span');
+        if (countdownEl && countdownEl.textContent.trim().toLowerCase() === 'terminé') return true;
+        const arrival = parseInt(row.dataset.arrivalTime) || 0;
+        return arrival > 0 && serverSecondsToLocalMs(arrival) <= Date.now();
+    }
+
     function getActiveExpeditions() {
         const expeditions = {};
         const eventRows = document.querySelectorAll('#eventContent tr.eventFleet[data-mission-type="15"]');
@@ -1460,10 +1469,7 @@
             const tooltipTitle = missionImg.getAttribute('data-tooltip-title');
             if (!tooltipTitle || !tooltipTitle.includes('Expédition (R)')) return;
 
-            const countdownEl = row.querySelector('.countDown span');
-            if (countdownEl && countdownEl.textContent.trim().toLowerCase() === 'terminé') {
-                return;
-            }
+            if (isEventRowFinished(row)) return;
 
             const coordsOriginEl = row.querySelector('.coordsOrigin a');
             if (!coordsOriginEl) return;
@@ -1504,8 +1510,7 @@
             const tooltipTitle = missionImg.getAttribute('data-tooltip-title');
             if (!tooltipTitle || !tooltipTitle.includes('Expédition (R)')) return;
 
-            const countdownEl = row.querySelector('.countDown span');
-            if (countdownEl && countdownEl.textContent.trim().toLowerCase() === 'terminé') {
+            if (isEventRowFinished(row)) {
                 const coordsOriginEl = row.querySelector('.coordsOrigin a');
                 if (!coordsOriginEl) return;
 
@@ -2399,13 +2404,26 @@
 
     // La liste des événements est écrite dans la page à son chargement : on la recharge pour voir les nouvelles flottes
     // (sinon l'expédition paraîtrait toujours manquante et serait relancée)
+    // (la page ne contient qu'un tableau vide : OGame le remplit avec catchEvents, qui renvoie { content: { eventlist: html } })
     async function refreshEventList() {
-        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=overview`, { credentials: 'include' });
-        const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
+        const response = await fetch(`${window.location.origin}/game/index.php?page=ingame&component=eventlist&action=catchEvents&ajax=1`, {
+            credentials: 'include',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        const data = await response.json();
+        const html = data && data.content && data.content.eventlist;
+        if (typeof html !== 'string') throw new Error('liste des événements illisible');
+        const doc = new DOMParser().parseFromString(html, 'text/html');
         const fresh = doc.querySelector('#eventContent');
         const current = document.querySelector('#eventContent');
         if (!fresh || !current) throw new Error('liste des événements introuvable');
         current.innerHTML = fresh.innerHTML;
+        // Brut, le HTML porte les infobulles en « title » : OGame les passe en data-tooltip-title, comme le reste du plugin les lit
+        current.querySelectorAll('[title]').forEach(el => {
+            if (!el.hasAttribute('data-tooltip-title')) el.setAttribute('data-tooltip-title', el.getAttribute('title'));
+            el.removeAttribute('title');
+        });
+        applyFleetArrivalsToBuildQueues();
         try {
             const page = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
             if (typeof page.getAjaxEventbox === 'function') page.getAjaxEventbox();
@@ -5169,6 +5187,7 @@
     function applyBuildUnavailable(queue, item, reason, estimate, recheckAt) {
         queue.status = reason;
         queue.nextCheckAt = recheckAt;
+        queue.lack = null;
         if (estimate) {
             queue.readyAt = estimate.readyAt;
             if (estimate.storageBlocked || estimate.energyBlocked) {
@@ -5181,6 +5200,15 @@
                 queue.nextCheckAt = estimate.readyAt + 5000;
                 // Si ces ressources arrivent plus tôt (récompense, flotte), refreshBuildEstimateHere vérifiera aussitôt
                 queue.awaitingResources = true;
+                // Manque et production à cet instant : de quoi recalculer l'échéance quand une flotte arrive (applyFleetArrivalsToBuildQueues)
+                const resources = getPageResources();
+                if (resources) {
+                    queue.lack = {
+                        at: Date.now(),
+                        missing: { ...estimate.missing },
+                        production: Object.fromEntries(BUILD_RESOURCES.map(r => [r, resources[r].production || 0])),
+                    };
+                }
                 buildLog(`${item.name} niv. ${item.targetLevel} : manque ${formatMissing(estimate.missing)}, prêt vers ${formatClock(estimate.readyAt)}`);
             } else if (estimate.readyAt && /ressource/i.test(reason)) {
                 // Le calcul dit « prêt » mais OGame dit « pas assez » (quelques unités d'écart, dépense entre-temps…) :
@@ -5192,6 +5220,95 @@
             // motif OGame affiché et revérification normale
         }
         buildLog(`${item.name} niv. ${item.targetLevel} non disponible : ${queue.status}`);
+    }
+
+    // Ressources transportées d'une infobulle de flotte : { metal, crystal, deuterium }
+    function parseFleetCargo(tooltipHtml) {
+        const names = { 'Métal': 'metal', 'Cristal': 'crystal', 'Deutérium': 'deuterium' };
+        const cargo = { metal: 0, crystal: 0, deuterium: 0 };
+        for (const m of String(tooltipHtml || '').matchAll(/<td colspan="2">([^<]+):<\/td>\s*<td class="value">([^<]+)<\/td>/g)) {
+            const r = names[m[1].trim()];
+            if (r) cargo[r] += parseInt(m[2].replace(/\D/g, ''), 10) || 0;
+        }
+        return cargo;
+    }
+
+    // Flottes qui déposent des ressources sur vos planètes/lunes, d'après la liste des événements :
+    // { planetId: [{ arrival, cargo }] }. Un transport ou un stationnement dépose à destination,
+    // un retour (expédition, pillage, récolte…) ramène son chargement à l'origine.
+    function getIncomingCargo() {
+        const rows = [...document.querySelectorAll('#eventContent tr.eventFleet')];
+        const bodies = getAllCelestialBodies();
+        const byKey = Object.fromEntries(bodies.map(b => [getBodyKey(b.type, b.coords), b.id]));
+        const incoming = {};
+        rows.forEach(row => {
+            const missionImg = row.querySelector('.missionFleet img');
+            const missionTitle = missionImg ? (missionImg.getAttribute('data-tooltip-title') || missionImg.getAttribute('title') || '') : '';
+            if (!missionTitle.includes('Propre flotte')) return;
+            const mission = parseInt(row.dataset.missionType) || 0;
+            const isReturn = row.dataset.returnFlight === 'true';
+            // Le retour d'un transport n'a plus rien à bord (l'infobulle montre encore le chargement livré)
+            if (isReturn && mission === 3) return;
+            if (!isReturn && mission !== 3 && mission !== 4) return;
+            const coords = (row.querySelector(isReturn ? '.coordsOrigin' : '.destCoords')?.textContent || '').replace(/[\[\]\s]/g, '');
+            const fleetEl = row.querySelector(isReturn ? '.originFleet' : '.destFleet');
+            const isMoon = !!fleetEl && (!!fleetEl.querySelector('figure.moon') || fleetEl.innerHTML.toLowerCase().includes('lune'));
+            const id = byKey[getBodyKey(isMoon ? 'moon' : 'planet', coords)];
+            if (!id) return;
+            const tooltip = row.querySelector('.icon_movement_reserve [data-tooltip-title], .icon_movement [data-tooltip-title], .icon_movement_reserve [title], .icon_movement [title]');
+            const cargo = parseFleetCargo(tooltip ? (tooltip.getAttribute('data-tooltip-title') || tooltip.getAttribute('title')) : '');
+            if (!BUILD_RESOURCES.some(r => cargo[r] > 0)) return;
+            const arrival = serverSecondsToLocalMs(parseInt(row.dataset.arrivalTime) || 0);
+            if (!arrival) return;
+            (incoming[id] = incoming[id] || []).push({ arrival, cargo });
+        });
+        return incoming;
+    }
+
+    // Une flotte chargée arrive sur une planète dont la file attend des ressources : sans visite de la planète,
+    // le plugin ne verrait les ressources qu'à l'échéance calculée sur la seule production. On recalcule
+    // l'échéance avec le chargement et on revient vérifier dès l'arrivée qui suffit.
+    function applyFleetArrivalsToBuildQueues() {
+        if (!CONFIG.buildQueue.enabled) return;
+        const queues = loadBuildQueues();
+        const now = Date.now();
+        let incoming = null;
+        let changed = false;
+        Object.keys(queues).forEach(key => {
+            const queue = queues[key];
+            if (!queue.items.length || !queue.awaitingResources || !queue.lack) return;
+            if ((queue.busyUntil || 0) > now || (queue.nextCheckAt || 0) <= now) return;
+            incoming = incoming || getIncomingCargo();
+            const arrivals = (incoming[getQueuePlanetId(key)] || [])
+                .filter(a => a.arrival > queue.lack.at)
+                .sort((a, b) => a.arrival - b.arrival);
+            if (arrivals.length === 0) return;
+
+            const { at, missing, production } = queue.lack;
+            const received = { metal: 0, crystal: 0, deuterium: 0 };
+            let readyAt = null;
+            for (const a of arrivals) {
+                BUILD_RESOURCES.forEach(r => { received[r] += a.cargo[r]; });
+                // Manque restant à l'arrivée (production depuis le relevé + chargements reçus), puis production seule
+                let candidate = a.arrival;
+                for (const r of BUILD_RESOURCES) {
+                    const lack = (missing[r] || 0) - (production[r] || 0) * (a.arrival - at) / 1000 - received[r];
+                    if (lack <= 0) continue;
+                    candidate = production[r] > 0 ? Math.max(candidate, a.arrival + lack / production[r] * 1000) : null;
+                    if (candidate === null) break;
+                }
+                if (candidate !== null && (readyAt === null || candidate < readyAt)) readyAt = candidate;
+            }
+            if (readyAt === null) return;
+            const blocker = getLaneBlocker(getQueuePlanetId(key), getQueueLane(key), queue.items[0], now);
+            const target = Math.max(readyAt + 10 * 1000, now + 2000, blocker ? blocker.until + 5000 : 0);
+            if (target < (queue.nextCheckAt || 0) - 3000) {
+                buildLog(`${queue.items[0].name} niv. ${queue.items[0].targetLevel} sur ${queue.coords} : flotte chargée en approche, vérification avancée à ${formatClock(target)}`);
+                queue.nextCheckAt = target;
+                changed = true;
+            }
+        });
+        if (changed) saveBuildQueues(queues);
     }
 
     // La page affichée suffit-elle pour décider ? Non si :
@@ -7121,6 +7238,9 @@
         setTimeout(performClick, delay);
     }
 
+    const EVENT_LIST_REFRESH_INTERVAL = 5 * 60 * 1000;
+    let lastEventListRefresh = Date.now();
+
     function startExpeditionChecker() {
         console.log(`[Monitor] Vérification des expéditions toutes les ${CONFIG.expeditionCheckInterval / 1000}s`);
 
@@ -7134,7 +7254,18 @@
 
             console.log('[Monitor] Vérification périodique des expéditions...');
             await waitForEventContent(5000);
+            // Page restée ouverte : la liste des événements date de son chargement (flottes lancées ailleurs,
+            // arrivées…) ; on la relit de temps en temps, sans changer de planète
+            if (Date.now() - lastEventListRefresh > EVENT_LIST_REFRESH_INTERVAL) {
+                lastEventListRefresh = Date.now();
+                try {
+                    await refreshEventList();
+                } catch (e) {
+                    console.log('[Monitor] Liste des événements non rafraîchie:', e);
+                }
+            }
             recordReturningFleets();
+            applyFleetArrivalsToBuildQueues();
             checkAlerts();
             checkExpeditions();
             await checkBuildQueues();
@@ -7268,6 +7399,7 @@
             checkAlerts();
             checkExpeditions();
             refreshBuildEstimateHere();
+            applyFleetArrivalsToBuildQueues();
             await checkBuildQueues(true);
             await checkAutoDefense();
             await runDiscovery();
