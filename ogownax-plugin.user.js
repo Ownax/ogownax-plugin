@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.25.1
+// @version      1.25.2
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -2376,7 +2376,25 @@
         const ships = {};
         (list || []).forEach(s => { ships[s.id] = Number(s.number) || 0; });
         const templates = (readPageJsonVar(html, 'expeditionFleetTemplates') || []).filter(t => t && t.id && t.ships);
-        return { ok: Array.isArray(list), ships, templates };
+        const number = (name) => {
+            const m = html.match(new RegExp(`var ${name}\\s*=\\s*(\\d+)`));
+            return m ? parseInt(m[1]) : null;
+        };
+        return {
+            ok: Array.isArray(list), ships, templates,
+            expeditionCount: number('expeditionCount'),
+            maxExpeditionCount: number('maxExpeditionCount'),
+        };
+    }
+
+    // Slots d'expédition pleins : état normal (toutes les expéditions sont parties), on réessaie un peu plus tard sans alerter
+    const DIRECT_FULL_RETRY_DELAY = 5 * 60 * 1000;
+    // Même problème déjà signalé sur Discord : pas de nouveau message avant ce délai
+    const DIRECT_PROBLEM_REPEAT_DELAY = 3 * 3600 * 1000;
+    const directProblemNotifiedAt = {};
+
+    function isTooManyExpeditionsMessage(message) {
+        return /trop d.exp[ée]ditions/i.test(String(message || ''));
     }
 
     // La liste des événements est écrite dans la page à son chargement : on la recharge pour voir les nouvelles flottes
@@ -2404,6 +2422,9 @@
         let switched = false;
         let sent = 0;
         const problems = [];
+        // Slots d'expédition libres (lus sur la page Flotte, décomptés à chaque envoi) ; null = inconnu
+        let freeExpeditionSlots = null;
+        let slotsFull = null;
         try {
             if (!wanted) throw new Error('aucune flotte enregistrée choisie (⚙️ → Expéditions)');
             bodiesLoop:
@@ -2422,6 +2443,14 @@
                 if (fleet.templates.length > 0) {
                     localStorage.setItem(FLEET_TEMPLATES_KEY, JSON.stringify(fleet.templates.map(t => t.name)));
                 }
+                if (Number.isInteger(fleet.expeditionCount) && Number.isInteger(fleet.maxExpeditionCount)) {
+                    freeExpeditionSlots = fleet.maxExpeditionCount - fleet.expeditionCount;
+                    slotsFull = `${fleet.expeditionCount}/${fleet.maxExpeditionCount}`;
+                    const expectedTotal = getTotalExpectedExpeditions();
+                    if (expectedTotal > fleet.maxExpeditionCount) {
+                        problems.push(`configuration : ${expectedTotal} expéditions demandées pour ${fleet.maxExpeditionCount} slots (⚙️ → Expéditions)`);
+                    }
+                }
                 const template = fleet.templates.find(t => String(t.name).trim().toLowerCase() === wanted);
                 if (!template) throw new Error(`flotte enregistrée « ${CONFIG.expeditionTemplate} » introuvable`);
                 const [galaxy, system] = body.coords.split(':');
@@ -2430,6 +2459,11 @@
                     // Vous reprenez la main : la planète courante du serveur doit redevenir celle affichée
                     if (!isUserIdle()) {
                         problems.push('interrompu (activité détectée)');
+                        break bodiesLoop;
+                    }
+                    // Tous les slots d'expédition sont pris : rien à envoyer, on repasse plus tard
+                    if (freeExpeditionSlots !== null && freeExpeditionSlots <= 0) {
+                        directRetryAt = Date.now() + DIRECT_FULL_RETRY_DELAY;
                         break bodiesLoop;
                     }
                     // OGame envoie ce qu'il y a quand la flotte est incomplète : on vérifie avant
@@ -2465,11 +2499,19 @@
                     setPageAjaxToken(res.newAjaxToken);
                     if (res.success && res.response && res.response.success) {
                         sent++;
+                        if (freeExpeditionSlots !== null) freeExpeditionSlots--;
                         Object.entries(template.ships).forEach(([id, n]) => { fleet.ships[id] = (fleet.ships[id] || 0) - n; });
                         console.log(`[Monitor] Expédition envoyée (direct) depuis ${body.coords} : ${res.response.shipsSent} vaisseau(x)`);
                         if (CONFIG.expeditionLaunchAlerts) notifyDiscord(`🚀 **Expédition lancée** (envoi direct) depuis ${label} (${i + 1}/${body.missing}) · « ${template.name} »`);
                     } else {
-                        skipBody(getOgameErrorMessage(res));
+                        const message = getOgameErrorMessage(res);
+                        // Slots pleins malgré le décompte (expédition partie d'ailleurs) : même cas que ci-dessus
+                        if (isTooManyExpeditionsMessage(message)) {
+                            freeExpeditionSlots = 0;
+                            directRetryAt = Date.now() + DIRECT_FULL_RETRY_DELAY;
+                            break bodiesLoop;
+                        }
+                        skipBody(message);
                         break;
                     }
                 }
@@ -2500,9 +2542,20 @@
         }
         if (problems.length > 0) {
             console.log('[Monitor] Envoi direct :', problems);
-            notifyDiscord(`⚠️ **Expéditions (envoi direct)** : ${problems.join(' · ')}`);
+            // Un problème persistant (flotte incomplète, configuration…) n'est signalé qu'une fois toutes les 3 h
+            const now = Date.now();
+            const fresh = problems.filter(p => !(now - (directProblemNotifiedAt[p] || 0) < DIRECT_PROBLEM_REPEAT_DELAY));
+            fresh.forEach(p => { directProblemNotifiedAt[p] = now; });
+            if (fresh.length > 0) notifyDiscord(`⚠️ **Expéditions (envoi direct)** : ${fresh.join(' · ')}`);
         }
-        showLaunchStatus(sent > 0 ? `✅ ${sent} expédition(s) lancée(s)${problems.length ? ` · ${problems[0]}` : ''}` : `Erreur: ${problems[0] || 'rien envoyé'}`, sent === 0);
+        const full = freeExpeditionSlots !== null && freeExpeditionSlots <= 0;
+        if (sent > 0) {
+            showLaunchStatus(`✅ ${sent} expédition(s) lancée(s)${problems.length ? ` · ${problems[0]}` : ''}`, false);
+        } else if (full && problems.length === 0) {
+            showLaunchStatus(`Slots d'expédition pleins${slotsFull ? ` (${slotsFull})` : ''}, nouvel essai dans 5 min`, false);
+        } else {
+            showLaunchStatus(`Erreur: ${problems[0] || 'rien envoyé'}`, true);
+        }
         return sent;
     }
 

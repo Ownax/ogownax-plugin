@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.25.2
+
+- 🐛 Expéditions (envoi direct) : les slots d'expédition (ex. 12/12) sont lus sur la page Flotte avant d'envoyer. Slots pleins → aucun envoi, aucune alerte, nouvel essai 5 min plus tard (fini les « Trop d'expéditions simultanées » toutes les 10 min).
+- Nombre d'envois limité aux slots libres ; « Trop d'expéditions simultanées » renvoyé par OGame est traité comme slots pleins (silencieux).
+- Configuration demandant plus d'expéditions que de slots : signalée sur Discord.
+- Un même problème (flotte incomplète, configuration…) n'est plus renvoyé sur Discord qu'une fois toutes les 3 h.
+
 ## 1.25.1
 
 - ⚙️ Alertes : le délai minimum « Expédition » n'est affiché que si « Message à chaque lancement d'expédition » est coché (il ne sert qu'à ces messages ; le bilan a son propre intervalle).
