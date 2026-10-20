@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.25.4
+
+- 🏗️ Files de construction : toutes les 10 min, le stock réel des planètes/lunes dont la file attend des ressources est relu sur la vue Empire. C'est une seule requête pour toutes les planètes (une de plus pour les lunes), sans navigation ni changement de planète.
+  - Si les ressources sont là (transport reçu, récompense, production sous-estimée…) : vérification immédiate et lancement, même si le stock dépasse la capacité des hangars.
+  - Sinon le manque est recalé sur le stock réel, et l'échéance est avancée si la production le permet.
+  - Aucune lecture quand aucune file n'attend de ressources.
+
 ## 1.25.3
 
 - 🐛 Expéditions : la liste des événements rechargée après un envoi direct était vide (elle était lue sur la Vue d'ensemble, où OGame ne la met pas). Le plugin croyait alors toutes les expéditions manquantes et renvoyait (« Trop d'expéditions simultanées », « manque … Grand transporteur »). Elle est maintenant lue là où OGame la charge (catchEvents), et l'heure d'arrivée sert à repérer les flottes arrivées (les comptes à rebours ne tournent pas dans une liste rechargée).

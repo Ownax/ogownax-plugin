@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OgOwnax Plugin
 // @namespace    https://github.com/Ownax/ogownax-plugin
-// @version      1.25.3
+// @version      1.25.4
 // @description  Alertes Discord, expéditions auto, panic et repli automatique pour OGame
 // @author       Ownax
 // @match        https://*.ogame.gameforge.com/*
@@ -5222,6 +5222,125 @@
         buildLog(`${item.name} niv. ${item.targetLevel} non disponible : ${queue.status}`);
     }
 
+    // ===== Ressources de toutes les planètes/lunes (vue Empire), sans navigation ni changement de planète =====
+
+    const EMPIRE_REFRESH_INTERVAL = 10 * 60 * 1000;
+    // Mémorisé : chaque chargement de page ne doit pas relancer la lecture
+    const EMPIRE_REFRESH_KEY = 'ogame_plugin_empire_refresh_at';
+
+    // Objet JSON qui commence à `start` dans un texte (accolades équilibrées, chaînes comprises)
+    function extractJsonObject(text, start) {
+        let depth = 0;
+        let inString = false;
+        let escaped = false;
+        for (let i = start; i < text.length; i++) {
+            const c = text[i];
+            if (inString) {
+                if (escaped) escaped = false;
+                else if (c === '\\') escaped = true;
+                else if (c === '"') inString = false;
+                continue;
+            }
+            if (c === '"') inString = true;
+            else if (c === '{') depth++;
+            else if (c === '}' && --depth === 0) {
+                try { return JSON.parse(text.slice(start, i + 1)); } catch (e) { return null; }
+            }
+        }
+        return null;
+    }
+
+    // { id: { metal, crystal, deuterium, storage: {…} } } ; planetType 0 = planètes, 1 = lunes
+    async function fetchEmpireResources(planetType) {
+        const response = await fetch(`${window.location.origin}/game/index.php?page=standalone&component=empire&planetType=${planetType}`, { credentials: 'include' });
+        const text = await response.text();
+        const start = text.indexOf('{"planets"');
+        const data = start >= 0 ? extractJsonObject(text, start) : null;
+        if (!data || !Array.isArray(data.planets)) throw new Error('vue Empire illisible');
+        const result = {};
+        data.planets.forEach(p => {
+            if (!p || !p.id) return;
+            const entry = { storage: {} };
+            BUILD_RESOURCES.forEach(r => {
+                entry[r] = Number(p[r]) || 0;
+                entry.storage[r] = Number(p[`${r}Storage`]) || 0;
+            });
+            result[String(p.id)] = entry;
+        });
+        return result;
+    }
+
+    // Toutes les 10 min, les files qui attendent des ressources sont confrontées au stock réel de leur planète
+    // (transport reçu, récompense, production mal estimée…) : si tout y est, vérification immédiate
+    async function refreshBuildResourcesFromEmpire() {
+        if (!CONFIG.buildQueue.enabled) return;
+        if (Date.now() - (parseInt(localStorage.getItem(EMPIRE_REFRESH_KEY)) || 0) < EMPIRE_REFRESH_INTERVAL) return;
+        const now = Date.now();
+        const queues = loadBuildQueues();
+        const waiting = Object.keys(queues).filter(key => {
+            const q = queues[key];
+            if (!q.items.length || (q.busyUntil || 0) > now || (q.nextCheckAt || 0) <= now + 60 * 1000) return false;
+            if (!isCostForItem(q.cost, q.items[0])) return false;
+            return q.awaitingResources || /ressource|stockage/i.test(q.status || '');
+        });
+        if (waiting.length === 0) return;
+        localStorage.setItem(EMPIRE_REFRESH_KEY, String(now));
+
+        const bodies = {};
+        try {
+            if (waiting.some(key => queues[key].type !== 'moon')) Object.assign(bodies, await fetchEmpireResources(0));
+            if (waiting.some(key => queues[key].type === 'moon')) Object.assign(bodies, await fetchEmpireResources(1));
+        } catch (e) {
+            buildLog('Lecture des ressources (vue Empire) impossible:', e.message || e);
+            return;
+        }
+
+        // Relu après les requêtes : la file a pu changer entre-temps
+        const fresh = loadBuildQueues();
+        let changed = false;
+        waiting.forEach(key => {
+            const queue = fresh[key];
+            const body = bodies[getQueuePlanetId(key)];
+            if (!queue || !queue.items.length || !body || !isCostForItem(queue.cost, queue.items[0])) return;
+            if ((queue.nextCheckAt || 0) <= Date.now()) return;
+            const cost = queue.cost;
+            const item = queue.items[0];
+            const missing = {};
+            BUILD_RESOURCES.forEach(r => { missing[r] = Math.max(0, Math.ceil((cost[r] || 0) - body[r])); });
+            // Un transport peut dépasser la capacité des hangars : seul le stock compte pour lancer
+            const ready = BUILD_RESOURCES.every(r => missing[r] === 0);
+            if (ready) {
+                const blocker = getLaneBlocker(getQueuePlanetId(key), getQueueLane(key), item, Date.now());
+                const target = Math.max(Date.now() + 2000, blocker ? blocker.until + 5000 : 0);
+                if (target < queue.nextCheckAt - 3000) {
+                    buildLog(`${item.name} niv. ${item.targetLevel} sur ${queue.coords} : ressources disponibles (vue Empire), vérification immédiate`);
+                    queue.nextCheckAt = target;
+                    changed = true;
+                }
+                return;
+            }
+            // Ce qui manque ne peut venir que d'une flotte si le hangar est trop petit pour la production
+            if (BUILD_RESOURCES.some(r => missing[r] > 0 && (cost[r] || 0) > body.storage[r])) return;
+            // Manque recalé sur le stock réel ; avec la production connue, l'échéance peut être avancée
+            const production = queue.lack && queue.lack.production;
+            if (!production) return;
+            queue.lack = { at: Date.now(), missing, production };
+            changed = true;
+            let readyAt = Date.now();
+            for (const r of BUILD_RESOURCES) {
+                if (missing[r] <= 0) continue;
+                if (!(production[r] > 0)) { readyAt = null; break; }
+                readyAt = Math.max(readyAt, Date.now() + missing[r] / production[r] * 1000);
+            }
+            if (readyAt && readyAt + 5000 < queue.nextCheckAt - 60 * 1000) {
+                buildLog(`${item.name} niv. ${item.targetLevel} sur ${queue.coords} : manque ${formatMissing(missing)} (vue Empire), prêt vers ${formatClock(readyAt)} (vérification avancée)`);
+                queue.readyAt = readyAt;
+                queue.nextCheckAt = readyAt + 5000;
+            }
+        });
+        if (changed) saveBuildQueues(fresh);
+    }
+
     // Ressources transportées d'une infobulle de flotte : { metal, crystal, deuterium }
     function parseFleetCargo(tooltipHtml) {
         const names = { 'Métal': 'metal', 'Cristal': 'crystal', 'Deutérium': 'deuterium' };
@@ -7266,6 +7385,7 @@
             }
             recordReturningFleets();
             applyFleetArrivalsToBuildQueues();
+            await refreshBuildResourcesFromEmpire();
             checkAlerts();
             checkExpeditions();
             await checkBuildQueues();
@@ -7400,6 +7520,7 @@
             checkExpeditions();
             refreshBuildEstimateHere();
             applyFleetArrivalsToBuildQueues();
+            await refreshBuildResourcesFromEmpire();
             await checkBuildQueues(true);
             await checkAutoDefense();
             await runDiscovery();
